@@ -110,7 +110,7 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:?DOMAIN is required}
-    command: /bin/sh -c "envsubst '\$${DOMAIN}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && (while true; do sleep 21600; nginx -s reload >/dev/null 2>&1 || true; done) & exec nginx -g 'daemon off;'"
+    command: /bin/sh -c "envsubst '\$${DOMAIN}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && (while true; do sleep 21600; nginx -s reload >/dev/null 2>&1 || true; done &) && exec nginx -g 'daemon off;'"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/__health || exit 1"]
       interval: 10s
