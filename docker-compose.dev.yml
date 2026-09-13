@@ -1,0 +1,43 @@
+# rustdesk-stack development overlay
+# Use together with the base compose when you want hot-reload (air) for the
+# backend and a live Vite dev server for the frontend:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# NOTE: development containers are significantly larger than the production
+# images (Go module tree + node_modules) - make sure you have enough disk.
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+      args:
+        DOCKER_REGISTRY_PREFIX: ${DOCKER_REGISTRY_PREFIX:-}
+        GOPROXY: ${GOPROXY:-}
+        APK_MIRROR: ${APK_MIRROR:-}
+    volumes:
+      - ./backend:/app
+      - ./data/hbbs:/data:ro
+      - ./status:/var/run/rustdesk:ro
+    command: air -c .air.toml
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+      args:
+        DOCKER_REGISTRY_PREFIX: ${DOCKER_REGISTRY_PREFIX:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+    ports:
+      - "5173:5173"
+    environment:
+      # Docker host gateway: the frontend dev server proxies /api to the
+      # backend container reached through the host.
+      VITE_PROXY_TARGET: http://172.17.0.1:8080
+    # Live-reload the Vite dev server from the host tree. The anonymous
+    # /app/node_modules mount keeps the image-installed dependencies intact.
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules

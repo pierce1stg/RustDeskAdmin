@@ -1,0 +1,163 @@
+name: rustdesk-stack
+
+services:
+  postgres:
+    image: ${DOCKER_REGISTRY_PREFIX:-}postgres:16-alpine
+    container_name: rustdesk-admin-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rustdesk_admin
+      POSTGRES_USER: rustdesk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./backend/sql/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rustdesk -d rustdesk_admin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  hbbs:
+    image: ${DOCKER_REGISTRY_PREFIX:-}rustdesk/rustdesk-server:1.1.16
+    container_name: rustdesk-hbbs
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required in .env}
+    command: hbbs -r ${DOMAIN}:21117
+    volumes:
+      - ./data/hbbs:/data
+    working_dir: /data
+    ports:
+      - "${NAT_PORT:-21115}:21115/tcp"
+      - "${ID_PORT:-21116}:21116/tcp"
+      - "${ID_PORT:-21116}:21116/udp"
+
+  hbbr:
+    image: ${DOCKER_REGISTRY_PREFIX:-}rustdesk/rustdesk-server:1.1.16
+    container_name: rustdesk-hbbr
+    restart: unless-stopped
+    command: hbbr
+    volumes:
+      - ./data/hbbs:/data
+    working_dir: /data
+    ports:
+      - "${RELAY_PORT:-21117}:21117/tcp"
+      - "${RELAY_PORT:-21117}:21117/udp"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+      args:
+        DOCKER_REGISTRY_PREFIX: ${DOCKER_REGISTRY_PREFIX:-}
+        GOPROXY: ${GOPROXY:-}
+        APK_MIRROR: ${APK_MIRROR:-}
+    container_name: rustdesk-admin-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://rustdesk:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/rustdesk_admin?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required in .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required in .env}
+      HBB_DB_PATH: /data/db_v2.sqlite3
+      HBB_PRESENCE_PATH: /var/run/rustdesk/presence.json
+      SERVER_PORT: 8080
+      GIN_MODE: release
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+      SERVER_DISPLAY_ADDRESS: ${SERVER_DISPLAY_ADDRESS:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      STATUS_REFRESH_INTERVAL: ${STATUS_REFRESH_INTERVAL:-30}
+      RUSTDESK_ID_PORT: ${RUSTDESK_ID_PORT:-21116}
+      RUSTDESK_RELAY_PORT: ${RUSTDESK_RELAY_PORT:-21117}
+      RUSTDESK_WS_PORT: ${RUSTDESK_WS_PORT:-21118}
+      RUSTDESK_PUBLIC_KEY: ${RUSTDESK_PUBLIC_KEY:-}
+      ALLOW_SERVER_UPDATE: ${ALLOW_SERVER_UPDATE:-true}
+      SCREENSHOTS_DIR: ${SCREENSHOTS_DIR:-/screenshots}
+      ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-60}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-7}
+    volumes:
+      - ./data/hbbs:/data:ro
+      - ./data/screenshots:/screenshots
+      - ./status:/var/run/rustdesk:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hbbs:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+      args:
+        DOCKER_REGISTRY_PREFIX: ${DOCKER_REGISTRY_PREFIX:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+    container_name: rustdesk-admin-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  nginx:
+    image: ${DOCKER_REGISTRY_PREFIX:-}nginx:alpine
+    container_name: rustdesk-admin-nginx
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+    command: /bin/sh -c "envsubst '\$${DOMAIN}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && (while true; do sleep 21600; nginx -s reload >/dev/null 2>&1 || true; done) & exec nginx -g 'daemon off;'"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/__health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${WSS_ID_PORT:-21118}:21118"
+      - "${WSS_RELAY_PORT:-21119}:21119"
+    volumes:
+      - ./data/certbot/www:/var/www/certbot:ro
+      - ./data/certbot/etc:/etc/letsencrypt:ro
+      - ./nginx/nginx.conf.template:/etc/nginx/nginx.conf.template:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - backend
+      - frontend
+
+  presence:
+    build:
+      context: .
+      dockerfile: presence/Dockerfile
+      args:
+        DOCKER_REGISTRY_PREFIX: ${DOCKER_REGISTRY_PREFIX:-}
+        APK_MIRROR: ${APK_MIRROR:-}
+    container_name: rustdesk-stack-presence
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./status:/status:rw
+      - ./scripts/presence.sh:/usr/local/bin/presence.sh:ro
+    environment:
+      PRESENCE_OUT_DIR: /status
+    command: /bin/sh -c "while true; do presence.sh; sleep 10; done"
+
+  certbot:
+    image: ${DOCKER_REGISTRY_PREFIX:-}certbot/certbot
+    container_name: rustdesk-stack-certbot
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do certbot renew --quiet; sleep 43200; done"]
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+    volumes:
+      - ./data/certbot/etc:/etc/letsencrypt
+      - ./data/certbot/www:/var/www/certbot

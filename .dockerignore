@@ -1,0 +1,14 @@
+# Keep the presence build context small and keep secrets out of images.
+data/
+status/
+.git
+.env
+.env.*
+*.bak
+*.bak.*
+backend/tmp/
+backend/bin/
+backend/vendor/
+frontend/node_modules/
+frontend/dist/
+nginx/conf.d/

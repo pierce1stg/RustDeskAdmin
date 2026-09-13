@@ -1,0 +1,294 @@
+user  nginx;
+worker_processes  auto;
+
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+    use epoll;
+    multi_accept on;
+}
+
+http {
+    log_format wss_log '$remote_addr $server_port [$time_local] "$request" $status upgrade=$http_upgrade upstream=$upstream_addr';
+
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    client_max_body_size 100M;
+
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css text/xml text/javascript application/javascript application/json application/xml;
+
+    # Upstream backends
+    upstream backend {
+        server backend:8080;
+        keepalive 32;
+    }
+
+    # Rate limiting
+    limit_req_zone $binary_remote_addr zone=api:10m rate=100r/s;
+    limit_req_zone $binary_remote_addr zone=auth:10m rate=10r/s;
+
+    # CORS policy for RustDesk Web Client (https://rustdesk.com/web)
+    map $http_origin $web_client_origin {
+        default "";
+        "~^https?://(web\.)?rustdesk\.com$" $http_origin;
+    }
+
+    # HTTP -> HTTPS redirect + ACME challenge
+    server {
+        listen 80;
+        server_name ${DOMAIN};
+
+        # Let's Encrypt ACME challenge
+        location /.well-known/acme-challenge/ {
+            root /var/www/certbot;
+        }
+
+        # Liveness probe (container healthcheck + setup.sh preflight)
+        location = /__health {
+            access_log off;
+            return 200 "ok";
+        }
+
+        # Redirect all other traffic to HTTPS
+        location / {
+            return 301 https://$server_name$request_uri;
+        }
+    }
+
+    # HTTPS server
+    server {
+        listen 443 ssl http2;
+        server_name ${DOMAIN};
+
+        # SSL (certs will be populated by certbot)
+        ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+        ssl_session_timeout 1d;
+        ssl_session_cache shared:MozSSL:10m;
+        ssl_session_tickets off;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+        ssl_prefer_server_ciphers off;
+        add_header Strict-Transport-Security "max-age=63072000" always;
+
+        # Security headers
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+        add_header Referrer-Policy "strict-origin-when-cross-origin";
+
+        # Frontend - proxy to frontend container
+        location / {
+            proxy_pass http://frontend:80;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_cache_bypass $http_upgrade;
+            proxy_read_timeout 86400;
+        }
+
+        # API endpoints
+        location /api/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 60s;
+            proxy_send_timeout 60s;
+        }
+
+        # Auth endpoints (stricter rate limit)
+        location /api/auth/ {
+            limit_req zone=auth burst=5 nodelay;
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # WebSocket for real-time updates (admin)
+        location /ws/ {
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 86400;
+            proxy_send_timeout 86400;
+        }
+
+        # WebSocket for devices API
+        location /api/ws/ {
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 86400;
+            proxy_send_timeout 86400;
+        }
+
+        # RustDesk Web Client WSS paths
+        # hbbs websocket (ID server) - bare /ws/id and /ws/id/... (used by web client + native WSS)
+        location /ws/id {
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+                add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+                add_header Access-Control-Max-Age 86400;
+                access_log off;
+                return 204;
+            }
+            add_header Access-Control-Allow-Origin $web_client_origin always;
+            proxy_pass http://hbbs:21118/ws/;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 86400;
+            proxy_send_timeout 86400;
+            proxy_buffering off;
+            proxy_request_buffering off;
+        }
+
+        # hbbr websocket (Relay server) - bare /ws/relay and /ws/relay/...
+        location /ws/relay {
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+                add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+                add_header Access-Control-Max-Age 86400;
+                access_log off;
+                return 204;
+            }
+            add_header Access-Control-Allow-Origin $web_client_origin always;
+            proxy_pass http://hbbr:21119/ws/;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 86400;
+            proxy_send_timeout 86400;
+            proxy_buffering off;
+            proxy_request_buffering off;
+        }
+
+        # Health check
+        location /health {
+            proxy_pass http://backend;
+            access_log off;
+        }
+    }
+
+    # RustDesk Web Client WSS - rendezvous (hbbs websocket on 21118, TLS)
+    server {
+        listen 21118 ssl;
+        server_name ${DOMAIN};
+
+        ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+        ssl_session_timeout 1d;
+        ssl_session_cache shared:MozSSL:10m;
+        ssl_session_tickets off;
+        ssl_protocols TLSv1.2 TLSv1.3;
+
+        access_log /var/log/nginx/access.log wss_log;
+        location / {
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+                add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+                add_header Access-Control-Max-Age 86400;
+                access_log off;
+                return 204;
+            }
+            add_header Access-Control-Allow-Origin $web_client_origin always;
+            proxy_pass http://hbbs:21118;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 86400;
+            proxy_send_timeout 86400;
+            proxy_buffering off;
+            proxy_request_buffering off;
+        }
+    }
+
+    # RustDesk Web Client WSS - relay (hbbr websocket on 21119, TLS)
+    server {
+        listen 21119 ssl;
+        server_name ${DOMAIN};
+
+        ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+        ssl_session_timeout 1d;
+        ssl_session_cache shared:MozSSL:10m;
+        ssl_session_tickets off;
+        ssl_protocols TLSv1.2 TLSv1.3;
+
+        access_log /var/log/nginx/access.log wss_log;
+        location / {
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+                add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+                add_header Access-Control-Max-Age 86400;
+                access_log off;
+                return 204;
+            }
+            add_header Access-Control-Allow-Origin $web_client_origin always;
+            proxy_pass http://hbbr:21119;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 86400;
+            proxy_send_timeout 86400;
+            proxy_buffering off;
+            proxy_request_buffering off;
+        }
+    }
+}
