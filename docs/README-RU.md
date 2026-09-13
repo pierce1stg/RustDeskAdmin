@@ -60,6 +60,7 @@ rustdesk-stack/
 - [Источники загрузки и зеркала (Block C)](#источники-загрузки-и-зеркала-block-c)
 - [Очистка Docker после сборки (Block D)](#очистка-docker-после-сборки-block-d)
 - [Резервное копирование и миграция](#резервное-копирование-и-миграция)
+- [Обновление](#обновление)
 - [Устранение неполадок](#устранение-неполадок)
 - [API (кратко)](#api-кратко)
 
@@ -214,7 +215,8 @@ Admin credentials). Пароль должен быть ≥8 символов (п
 `SERVER_DISPLAY_ADDRESS` (опц. ручной адрес), `RUSTDESK_PUBLIC_KEY` (опц.; на
 новом стеке hbbs генерирует ключ в `data/hbbs`), `RUSTDESK_ID_PORT`,
 `RUSTDESK_RELAY_PORT`, `RUSTDESK_WS_PORT`, `ACCESS_TOKEN_TTL_MINUTES` (60),
-`REFRESH_TOKEN_TTL_DAYS` (7).
+`REFRESH_TOKEN_TTL_DAYS` (7), `RUSTDESK_SERVER_VERSION` (1.1.16, пин compose для
+hbbs/hbbr), `ALLOW_SERVER_UPDATE` (true, включает карточку Server updates в панели).
 
 ### Срок жизни сессии (JWT TTL)
 
@@ -415,6 +417,42 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 ```
 
 Либо используйте `pg_dump`/restore для БД панели, если предпочитаете SQL-дамп.
+
+---
+
+## Обновление
+
+Две независимые части обновляются по-разному.
+
+### Админпанель (backend / frontend / nginx / presence)
+
+Внутри панели автоапдейта нет. Скачайте код и перезапустите идемпотентный
+bootstrap:
+
+```
+git pull
+./setup.sh        # пересобирает кастомные образы, сохраняя .env и data/
+```
+
+Состояние (ключ сервера, устройства, БД панели, TLS-сертификаты) живёт в `data/`
+и `.env` и никогда не трогается `./setup.sh`. Сессии из `auth_sessions` переживают
+перекат. Если ваш клон относится к периоду до переписывания истории, `git pull`
+может упасть с «unrelated histories» — тогда сделайте свежий clone и перенесите
+`.env`, `data/` и `status/` в новый каталог, затем запустите `./setup.sh`.
+
+### Сервер RustDesk (hbbs / hbbr)
+
+Два способа обновить релей до новой версии:
+
+1. **На лету (панель)**: Settings → Server updates → проверить релиз и применить.
+   Подтягивает образ и пересоздаёт работающий контейнер (откат при сбое).
+   Управляется `ALLOW_SERVER_UPDATE` (по умолчанию `true`).
+2. **Персистентно (пин в compose)**: поднимите `RUSTDESK_SERVER_VERSION` в `.env`
+   (по умолчанию `1.1.16`) и перезапустите `./setup.sh`.
+
+Апдейт из панели — живой hot-swap: следующий `docker compose up` / `./setup.sh`
+пересоздаст hbbs/hbbr из запиненной `RUSTDESK_SERVER_VERSION`. Поэтому пином
+задавайте версию, которую реально хотите держать.
 
 ---
 

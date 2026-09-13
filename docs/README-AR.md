@@ -60,6 +60,7 @@ rustdesk-stack/
 - [مصادر التحميل والمرايا (Block C)](#مصادر-التحميل-والمرايا-block-c)
 - [تنظيف Docker بعد البناء (Block D)](#تنظيف-docker-بعد-البناء-block-d)
 - [النسخ الاحتياطي والترحيل](#النسخ-الاحتياطي-والترحيل)
+- [التحديث](#التحديث)
 - [استكشاف الأخطاء](#استكشاف-الأخطاء)
 - [API (مرجع)](#api-مرجع)
 
@@ -210,7 +211,9 @@ JWT_REFRESH_SECRET=$(openssl rand -base64 32)
 `ADMIN_USERNAME` و`ADMIN_PASSWORD` و`STATUS_REFRESH_INTERVAL` (30s)
 و`SERVER_DISPLAY_ADDRESS` (تجاوز اختياري) و`RUSTDESK_PUBLIC_KEY` (اختياري؛ في ستاك
 جديد يولّد hbbs المفتاح في `data/hbbs`) و`RUSTDESK_ID_PORT` و`RUSTDESK_RELAY_PORT`
-و`RUSTDESK_WS_PORT` و`ACCESS_TOKEN_TTL_MINUTES` (60) و`REFRESH_TOKEN_TTL_DAYS` (7).
+و`RUSTDESK_WS_PORT` و`ACCESS_TOKEN_TTL_MINUTES` (60) و`REFRESH_TOKEN_TTL_DAYS` (7)
+و`RUSTDESK_SERVER_VERSION` (1.1.16، تثبيت compose لـ hbbs/hbbr) و`ALLOW_SERVER_UPDATE`
+(true، يفعّل بطاقة Server updates في اللوحة).
 
 ### عمر الجلسة (JWT TTL)
 
@@ -406,6 +409,42 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 ```
 
 أو استخدم `pg_dump`/الاستعادة لقاعدة بيانات اللوحة إن فضّلت تفريغ SQL.
+
+---
+
+## التحديث
+
+جزءان مستقلان يُحدَّثان بشكل مختلف.
+
+### لوحة الإدارة (backend / frontend / nginx / presence)
+
+لا يوجد تحديث ذاتي من داخل اللوحة. اسحب الكود وأعد تشغيل السكربت التمهيدي
+(idempotent) المعرّف بالأمر التالي:
+
+```
+git pull
+./setup.sh        # يعيد بناء الصور، مع الحفاظ على .env و data/
+```
+
+الحالة (مفتاح الخادم، الأجهزة، قاعدة بيانات اللوحة، شهادات TLS) تعيش في `data/`
+و`.env` ولا يلمسها `./setup.sh` أبدًا. جلسات `auth_sessions` تصمد عبر إعادة النشر.
+إذا كانت نسخة الاستنساخ لديك أقدم من إعادة كتابة التاريخ، قد يفشل `git pull` برسالة
+«unrelated histories» — عندها استنسخ من جديد وانقل `.env` و`data/` و`status/` إلى
+الدليل الجديد، ثم شغّل `./setup.sh`.
+
+### خادم RustDesk (hbbs / hbbr)
+
+طريقتان لتحديث المرحّل (relay) إلى إصدار أحدث:
+
+1. **فوريًا (من اللوحة)**: Settings → Server updates → تحقّق من الإصدار وطبّقه.
+   يسحب الصورة ويعيد إنشاء الحاوية العاملة (يتراجع عند الفشل). يتحكم به
+   `ALLOW_SERVER_UPDATE` (الافتراضي `true`).
+2. **دائم (تثبيت compose)**: ارفع `RUSTDESK_SERVER_VERSION` في `.env` (الافتراضي
+   `1.1.16`) وأعد تشغيل `./setup.sh`.
+
+التحديث من اللوحة هو hot-swap حي: أمر `docker compose up` / `./setup.sh` التالي
+سيعيد إنشاء hbbs/hbbr من `RUSTDESK_SERVER_VERSION` المثبّتة. لذا استخدم التثبيت
+للإصدار الذي تريد إبقاءه فعليًا.
 
 ---
 

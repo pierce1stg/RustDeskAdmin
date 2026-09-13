@@ -19,7 +19,7 @@ services:
       retries: 10
 
   hbbs:
-    image: ${DOCKER_REGISTRY_PREFIX:-}rustdesk/rustdesk-server:1.1.16
+    image: ${DOCKER_REGISTRY_PREFIX:-}rustdesk/rustdesk-server:${RUSTDESK_SERVER_VERSION:-1.1.16}
     container_name: rustdesk-hbbs
     restart: unless-stopped
     environment:
@@ -34,7 +34,7 @@ services:
       - "${ID_PORT:-21116}:21116/udp"
 
   hbbr:
-    image: ${DOCKER_REGISTRY_PREFIX:-}rustdesk/rustdesk-server:1.1.16
+    image: ${DOCKER_REGISTRY_PREFIX:-}rustdesk/rustdesk-server:${RUSTDESK_SERVER_VERSION:-1.1.16}
     container_name: rustdesk-hbbr
     restart: unless-stopped
     command: hbbr

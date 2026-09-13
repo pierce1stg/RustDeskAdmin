@@ -58,6 +58,7 @@ rustdesk-stack/
 - [下载源与镜像（Block C）](#下载源与镜像block-c)
 - [构建后的 Docker 清理（Block D）](#构建后的-docker-清理block-d)
 - [备份与迁移](#备份与迁移)
+- [更新](#更新)
 - [故障排查](#故障排查)
 - [API（参考）](#api参考)
 
@@ -201,7 +202,9 @@ JWT_REFRESH_SECRET=$(openssl rand -base64 32)
 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`STATUS_REFRESH_INTERVAL`（30s）、
 `SERVER_DISPLAY_ADDRESS`（可选覆盖）、`RUSTDESK_PUBLIC_KEY`（可选；在新栈上
 hbbs 会在 `data/hbbs` 生成密钥）、`RUSTDESK_ID_PORT`、`RUSTDESK_RELAY_PORT`、
-`RUSTDESK_WS_PORT`、`ACCESS_TOKEN_TTL_MINUTES`（60）、`REFRESH_TOKEN_TTL_DAYS`（7）。
+`RUSTDESK_WS_PORT`、`ACCESS_TOKEN_TTL_MINUTES`（60）、`REFRESH_TOKEN_TTL_DAYS`（7）、
+`RUSTDESK_SERVER_VERSION`（1.1.16，hbbs/hbbr 的 compose 锁定）、`ALLOW_SERVER_UPDATE`
+（true，启用面板的 Server updates 卡片）。
 
 ### 会话时长（JWT TTL）
 
@@ -393,6 +396,39 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 ```
 
 如果更倾向 SQL 转储，也可以对面板数据库使用 `pg_dump`/还原。
+
+---
+
+## 更新
+
+两个独立的部分更新方式不同。
+
+### 管理面板（backend / frontend / nginx / presence）
+
+面板内没有自更新。拉取代码并重新运行幂等的引导脚本：
+
+```
+git pull
+./setup.sh        # 重建自定义镜像，保留 .env 和 data/
+```
+
+状态（服务器密钥、设备、面板数据库、TLS 证书）位于 `data/` 和 `.env`，
+`./setup.sh` 绝不触碰。`auth_sessions` 中的会话在重新部署后仍然存活。如果你的
+克隆早于历史重写，`git pull` 可能报「unrelated histories」——此时重新克隆，把
+`.env`、`data/` 和 `status/` 移进新检出目录，再运行 `./setup.sh`。
+
+### RustDesk 服务器（hbbs / hbbr）
+
+更新中继到较新版本有两种方式：
+
+1. **就地（面板）**：Settings → Server updates → 检查并应用新版本。会拉取镜像并
+   重建运行中的容器（失败自动回滚）。由 `ALLOW_SERVER_UPDATE` 控制（默认 `true`）。
+2. **持久（compose 锁定）**：在 `.env` 中调高 `RUSTDESK_SERVER_VERSION`（默认
+   `1.1.16`）并重新运行 `./setup.sh`。
+
+面板内的就地更新是活的 hot-swap：下一次 `docker compose up` / `./setup.sh` 会按
+锁定的 `RUSTDESK_SERVER_VERSION` 重建 hbbs/hbbr。所以请在锁定项里填你真正想
+长期运行的版本。
 
 ---
 

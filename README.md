@@ -59,6 +59,7 @@ rustdesk-stack/
 - [Download sources and mirrors (Block C)](#download-sources-and-mirrors-block-c)
 - [Docker cleanup after build (Block D)](#docker-cleanup-after-build-block-d)
 - [Backup and migration](#backup-and-migration)
+- [Updating](#updating)
 - [Troubleshooting](#troubleshooting)
 - [API (reference)](#api-reference)
 
@@ -213,7 +214,8 @@ The password must be at least 8 characters (validated by the backend).
 `SERVER_DISPLAY_ADDRESS` (optional override), `RUSTDESK_PUBLIC_KEY` (optional; on a
 fresh stack hbbs generates the key in `data/hbbs`), `RUSTDESK_ID_PORT`,
 `RUSTDESK_RELAY_PORT`, `RUSTDESK_WS_PORT`, `ACCESS_TOKEN_TTL_MINUTES` (60),
-`REFRESH_TOKEN_TTL_DAYS` (7).
+`REFRESH_TOKEN_TTL_DAYS` (7), `RUSTDESK_SERVER_VERSION` (1.1.16, compose pin for
+hbbs/hbbr), `ALLOW_SERVER_UPDATE` (true, enables the panel's Server updates card).
 
 ### Session lifetime (JWT TTL)
 
@@ -413,6 +415,41 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 ```
 
 Or use `pg_dump`/restore for the panel DB if you prefer an SQL dump.
+
+---
+
+## Updating
+
+Two independent parts update differently.
+
+### Admin panel (backend / frontend / nginx / presence)
+
+There is no in-panel self-update. Pull the code and re-run the idempotent bootstrap:
+
+```
+git pull
+./setup.sh        # rebuilds the custom images, keeps .env and data/
+```
+
+State (server key, devices, admin DB, TLS certificates) lives in `data/` and `.env`
+and is never touched by `./setup.sh`. Sessions in `auth_sessions` survive redeploys.
+If your clone predates a history rewrite, `git pull` may fail with "unrelated
+histories" — clone fresh and move `.env`, `data/` and `status/` into the new checkout
+instead, then run `./setup.sh`.
+
+### RustDesk server (hbbs / hbbr)
+
+Two ways to update the relay to a newer release:
+
+1. **Inline (panel)**: Settings → Server updates → check for a release and apply. It
+   pulls the image and recreates the running container (rolls back on failure). Gated
+   by `ALLOW_SERVER_UPDATE` (default `true`).
+2. **Persistent (compose pin)**: bump `RUSTDESK_SERVER_VERSION` in `.env` (default
+   `1.1.16`) and re-run `./setup.sh`.
+
+The panel's inline update is a live hot-swap: the next `docker compose up` /
+`./setup.sh` recreates hbbs/hbbr from the pinned `RUSTDESK_SERVER_VERSION`. Use the
+pin for the version you actually want to keep running.
 
 ---
 
