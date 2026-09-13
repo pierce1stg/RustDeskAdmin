@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 import { Home, Settings, Users, Download, LogOut, X } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
+import { usePanelVersion } from '@/api/panel'
 import { Button } from '@/components/ui/button'
 
 const navigation = [
@@ -21,6 +22,7 @@ export function Sidebar() {
   const { t } = useTranslation()
   const { logout } = useAuthStore()
   const { sidebarCollapsed: collapsed, toggleCollapsed, mobileOpen, setMobileOpen } = useUiStore()
+  const { data: version } = usePanelVersion()
   const compact = collapsed && !mobileOpen
   const isRtl = typeof document !== 'undefined' && document.documentElement.dir === 'rtl'
 
@@ -126,6 +128,14 @@ export function Sidebar() {
         </nav>
 
         <div className="border-t p-4">
+          {!compact && (
+            <p
+              className="mb-2 px-2 text-[11px] leading-none text-muted-foreground"
+              title={t('nav.version')}
+            >
+              v{version?.version ?? '…'}
+            </p>
+          )}
           <Button
             variant="ghost"
             className={cn('w-full justify-start', compact && 'justify-center px-2')}

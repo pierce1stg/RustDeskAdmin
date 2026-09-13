@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
-import { Server, Network, RefreshCw, ShieldCheck, Languages, Download, Check, Clock } from 'lucide-react'
+import { Server, Network, RefreshCw, ShieldCheck, Languages, Download, Check, Clock, Rocket } from 'lucide-react'
 import {
   useSettings,
   useUpdateSetting,
@@ -34,6 +34,12 @@ import { apiErrorText } from '@/api/client'
 import { useServerInfo, useUpdateServerInfo, ServerField } from '@/api/serverInfo'
 import { useServerStatus } from '@/api/status'
 import { useServerUpdates, useApplyUpdate, UpdateComponent } from '@/api/updates'
+import {
+  usePanelUpdateCheck,
+  usePanelUpdateStatus,
+  useApplyPanelUpdate,
+  PANEL_ACTIVE_PHASES,
+} from '@/api/panel'
 import { SUPPORTED_LANGS, LANGUAGE_LABELS, changeAppLanguage } from '@/i18n'
 import i18n from '@/i18n'
 
@@ -292,6 +298,174 @@ function ServerUpdatesCard() {
   )
 }
 
+function PanelUpdatesCard() {
+  const { t } = useTranslation()
+  const { toast } = useToast()
+  const { data: check, refetch, isFetching, isError } = usePanelUpdateCheck(true)
+  const apply = useApplyPanelUpdate()
+  const { data: status } = usePanelUpdateStatus(apply.isPending)
+  const [confirm, setConfirm] = useState(false)
+
+  const phase = status?.phase ?? 'idle'
+  const active = PANEL_ACTIVE_PHASES.includes(phase)
+  const hasUpdate = check?.update_available
+  const enabled = check?.enabled !== false
+
+  const phaseLabel = (p: string) => {
+    switch (p) {
+      case 'verifying':
+        return t('settings.panelPhaseVerifying')
+      case 'backup':
+        return t('settings.panelPhaseBackup')
+      case 'extracting':
+        return t('settings.panelPhaseExtracting')
+      case 'building':
+        return t('settings.panelPhaseBuilding')
+      case 'health':
+        return t('settings.panelPhaseHealth')
+      case 'rollback':
+        return t('settings.panelPhaseRollback')
+      case 'rolled_back':
+        return t('settings.panelPhaseRolledBack')
+      case 'error':
+        return t('settings.panelPhaseError')
+      case 'ok':
+        return t('settings.panelPhaseOk')
+      default:
+        return t('settings.panelPhaseIdle')
+    }
+  }
+
+  const handleCheck = async () => {
+    try {
+      await refetch()
+    } catch {
+      /* surfaced by isError below */
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Rocket className="h-5 w-5 text-primary" />
+          <CardTitle>{t('settings.panelUpdatesTitle')}</CardTitle>
+        </div>
+        <p className="text-muted-foreground">{t('settings.panelUpdatesDesc')}</p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-sm font-medium">{t('settings.panelVersion')}</span>
+            <Badge variant="outline" className="font-mono text-[11px]">
+              v{check?.current || '—'}
+            </Badge>
+            {hasUpdate ? (
+              <Badge variant="destructive" className="font-mono text-[11px]">
+                → v{check?.latest}
+              </Badge>
+            ) : check ? (
+              <Badge variant="success" className="text-[11px]">
+                <Check className="me-1 h-3 w-3" />
+                {t('settings.panelUpToDate')}
+              </Badge>
+            ) : null}
+          </div>
+          <Button
+            size="sm"
+            variant={hasUpdate ? 'destructive' : 'outline'}
+            disabled={!hasUpdate || !enabled || active || apply.isPending}
+            title={!enabled ? t('settings.panelUpdateDisabled') : !hasUpdate ? t('settings.noUpdateHint') : undefined}
+            onClick={() => setConfirm(true)}
+          >
+            {apply.isPending || active ? t('settings.panelPhaseWorking') : t('settings.panelUpdateNow')}
+          </Button>
+        </div>
+
+        {active && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border px-4 py-3 text-sm text-muted-foreground">
+            <span className="me-2 h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            {t('settings.panelPhaseWorking')} — {phaseLabel(phase)}
+          </div>
+        )}
+
+        {(phase === 'rolled_back' || phase === 'error') && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-200 px-4 py-3 text-sm text-red-600">
+            {phaseLabel(phase)}
+            {status?.error && <span className="font-mono text-xs">{status.error}</span>}
+          </div>
+        )}
+
+        {!enabled && <p className="text-xs text-muted-foreground">{t('settings.panelUpdateDisabled')}</p>}
+
+        <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
+          <Button variant="outline" size="sm" onClick={handleCheck} disabled={isFetching || active}>
+            {isFetching ? (
+              <>
+                <span className="me-2 h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                {t('settings.checkingUpdates')}
+              </>
+            ) : (
+              <>
+                <RefreshCw className="me-2 h-4 w-4" />
+                {t('settings.checkUpdates')}
+              </>
+            )}
+          </Button>
+          {isError && <span className="text-xs text-red-600">{t('settings.panelCheckFailed')}</span>}
+          {check && !isError && (
+            <span className="text-xs text-muted-foreground">
+              {t('settings.checkResults', {
+                source: check.source,
+                time: new Date(check.checked_at).toLocaleTimeString(),
+              })}
+            </span>
+          )}
+        </div>
+      </CardContent>
+
+      <Dialog open={confirm} onOpenChange={(open) => !open && setConfirm(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('settings.panelUpdateConfirmTitle', { latest: check?.latest })}</DialogTitle>
+            <DialogDescription>
+              {t('settings.panelUpdateConfirmDesc', {
+                current: check?.current || '—',
+                latest: check?.latest || '—',
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirm(false)} disabled={apply.isPending}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={apply.isPending}
+              onClick={async () => {
+                try {
+                  await apply.mutateAsync()
+                  toast({ title: t('settings.panelUpdateAccepted'), variant: 'success' })
+                } catch (error) {
+                  toast({
+                    title: t('settings.panelUpdateFailed'),
+                    description: apiErrorText(error),
+                    variant: 'destructive',
+                  })
+                } finally {
+                  setConfirm(false)
+                }
+              }}
+            >
+              {apply.isPending ? t('settings.panelPhaseWorking') : t('settings.panelUpdateConfirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  )
+}
+
 export function SettingsPage() {
   const { t } = useTranslation()
   const { toast } = useToast()
@@ -530,6 +704,8 @@ export function SettingsPage() {
       </Card>
 
       <ServerUpdatesCard />
+
+      <PanelUpdatesCard />
 
       <Card>
         <CardHeader>

@@ -213,7 +213,8 @@ JWT_REFRESH_SECRET=$(openssl rand -base64 32)
 جديد يولّد hbbs المفتاح في `data/hbbs`) و`RUSTDESK_ID_PORT` و`RUSTDESK_RELAY_PORT`
 و`RUSTDESK_WS_PORT` و`ACCESS_TOKEN_TTL_MINUTES` (60) و`REFRESH_TOKEN_TTL_DAYS` (7)
 و`RUSTDESK_SERVER_VERSION` (1.1.16، تثبيت compose لـ hbbs/hbbr) و`ALLOW_SERVER_UPDATE`
-(true، يفعّل بطاقة Server updates في اللوحة).
+(true، يفعّل بطاقة Server updates في اللوحة) و`ALLOW_PANEL_UPDATE`
+(true، يفعّل بطاقة Panel update في اللوحة — الفحص والتحديث فقط بضغطة زر؛ لا يوجد تحديث ذاتي تلقائي).
 
 ### عمر الجلسة (JWT TTL)
 
@@ -418,13 +419,21 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 
 ### لوحة الإدارة (backend / frontend / nginx / presence)
 
-لا يوجد تحديث ذاتي من داخل اللوحة. اسحب الكود وأعد تشغيل السكربت التمهيدي
-(idempotent) المعرّف بالأمر التالي:
+تستطيع اللوحة تحديث نفسها من إصدار موسوم (tagged release) على GitHub:
 
-```
-git pull
-./setup.sh        # يعيد بناء الصور، مع الحفاظ على .env و data/
-```
+1. **من اللوحة (Settings → Panel update)**: يفحص أحدث إصدار **مستقر** `vX.Y.Z`، وينزّل الحزمة
+   المفحوصة بـ SHA-256، ويستبدل كود اللوحة ويشغّل `./setup.sh` (من 1 إلى 3 دقائق، مع
+   الحفاظ على البيانات و`.env`، وتراجع تلقائي عند الفشل). يعمل التحديث فقط عند الضغط
+   على زر التحديث — لا تحدّث اللوحة نفسها تلقائيًا أبدًا. يتحكم به `ALLOW_PANEL_UPDATE`
+   (الافتراضي `true`).
+2. **يدويًا**: اسحب الكود وأعد تشغيل السكربت التمهيدي (idempotent):
+   ```
+   git pull
+   ./setup.sh        # يعيد بناء الصور، مع الحفاظ على .env و data/
+   ```
+
+إصدار اللوحة الحالي ظاهر في تذييل الصفحة
+(`backend/internal/appversion/version.go`).
 
 الحالة (مفتاح الخادم، الأجهزة، قاعدة بيانات اللوحة، شهادات TLS) تعيش في `data/`
 و`.env` ولا يلمسها `./setup.sh` أبدًا. جلسات `auth_sessions` تصمد عبر إعادة النشر.

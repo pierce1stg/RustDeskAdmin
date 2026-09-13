@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"rustdesk-admin/internal/appversion"
 	"rustdesk-admin/internal/auth"
 	"rustdesk-admin/internal/device"
 	"rustdesk-admin/internal/settings"
@@ -34,6 +35,7 @@ type Config struct {
 	ServerPort         string
 	GinMode            string
 	AllowServerUpdates bool
+	AllowPanelUpdates  bool
 	ScreenshotsDir     string
 }
 
@@ -74,6 +76,7 @@ func main() {
 	authService := auth.NewService(cfg.JWTSecret, cfg.JWTRefreshSecret, pool, settingsStore)
 	deviceService := device.NewService(pool, cfg.HBBDBPath, cfg.HBBPresencePath, settingsStore, logger)
 	updater := update.NewUpdater(cfg.HBBPresencePath, cfg.AllowServerUpdates, logger)
+	panelUpdater := update.NewPanelUpdater(cfg.HBBPresencePath, cfg.AllowPanelUpdates, logger)
 
 	if err := os.MkdirAll(cfg.ScreenshotsDir, 0o755); err != nil {
 		logger.Warn("Failed to create screenshots directory", zap.Error(err))
@@ -81,7 +84,7 @@ func main() {
 
 	go deviceService.StartSync(rootCtx)
 
-	router := setupRouter(cfg, authService, deviceService, settingsStore, updater)
+	router := setupRouter(cfg, authService, deviceService, settingsStore, updater, panelUpdater)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.ServerPort,
@@ -118,6 +121,7 @@ func loadConfig() Config {
 		ServerPort:         getEnv("SERVER_PORT", "8080"),
 		GinMode:            getEnv("GIN_MODE", "debug"),
 		AllowServerUpdates: getEnv("ALLOW_SERVER_UPDATE", "true") != "false",
+		AllowPanelUpdates:  getEnv("ALLOW_PANEL_UPDATE", "true") != "false",
 		ScreenshotsDir:     getEnv("SCREENSHOTS_DIR", "/screenshots"),
 	}
 }
@@ -190,7 +194,7 @@ func validServerPublicKey(v string) bool {
 	return err == nil && len(decoded) == 32
 }
 
-func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Service, settingsStore *settings.Store, updater *update.Updater) *gin.Engine {
+func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Service, settingsStore *settings.Store, updater *update.Updater, panelUpdater *update.PanelUpdater) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
@@ -256,6 +260,20 @@ func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Se
 			{
 				updates.GET("", updater.HandleCheck)
 				updates.POST("/apply", updater.HandleApply)
+			}
+
+			panel := protected.Group("/panel")
+			{
+				panel.GET("/version", func(c *gin.Context) {
+					c.JSON(200, gin.H{"version": appversion.Version})
+				})
+			}
+
+			panelUpdates := protected.Group("/panel-updates")
+			{
+				panelUpdates.GET("/check", panelUpdater.HandleCheck)
+				panelUpdates.GET("/status", panelUpdater.HandleStatus)
+				panelUpdates.POST("/apply", panelUpdater.HandleApply)
 			}
 
 			settingGroup := protected.Group("/settings")

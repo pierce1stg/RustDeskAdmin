@@ -215,7 +215,9 @@ The password must be at least 8 characters (validated by the backend).
 fresh stack hbbs generates the key in `data/hbbs`), `RUSTDESK_ID_PORT`,
 `RUSTDESK_RELAY_PORT`, `RUSTDESK_WS_PORT`, `ACCESS_TOKEN_TTL_MINUTES` (60),
 `REFRESH_TOKEN_TTL_DAYS` (7), `RUSTDESK_SERVER_VERSION` (1.1.16, compose pin for
-hbbs/hbbr), `ALLOW_SERVER_UPDATE` (true, enables the panel's Server updates card).
+hbbs/hbbr), `ALLOW_SERVER_UPDATE` (true, enables the panel's Server updates card),
+`ALLOW_PANEL_UPDATE` (true, enables the panel's in-panel update card — check
+and apply only on a press of the button; there is no automatic self-update).
 
 ### Session lifetime (JWT TTL)
 
@@ -424,12 +426,22 @@ Two independent parts update differently.
 
 ### Admin panel (backend / frontend / nginx / presence)
 
-There is no in-panel self-update. Pull the code and re-run the idempotent bootstrap:
+The panel can update itself from a tagged GitHub release:
 
-```
-git pull
-./setup.sh        # rebuilds the custom images, keeps .env and data/
-```
+1. **In-panel (Settings → Panel update)**: checks the newest stable `vX.Y.Z`
+   release, downloads the checksum-verified bundle, replaces the code and
+   re-runs `./setup.sh` (~1–3 min, data and `.env` preserved, automatic
+   rollback). Updates only run when you press the Update button — the panel
+   never updates itself automatically. Gated by `ALLOW_PANEL_UPDATE`
+   (default `true`).
+2. **Manual**: pull the code and re-run the idempotent bootstrap:
+   ```
+   git pull
+   ./setup.sh        # rebuilds the custom images, keeps .env and data/
+   ```
+
+The running panel version is shown in the sidebar footer
+(`backend/internal/appversion/version.go`).
 
 State (server key, devices, admin DB, TLS certificates) lives in `data/` and `.env`
 and is never touched by `./setup.sh`. Sessions in `auth_sessions` survive redeploys.

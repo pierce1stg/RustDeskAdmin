@@ -204,7 +204,8 @@ JWT_REFRESH_SECRET=$(openssl rand -base64 32)
 hbbs 会在 `data/hbbs` 生成密钥）、`RUSTDESK_ID_PORT`、`RUSTDESK_RELAY_PORT`、
 `RUSTDESK_WS_PORT`、`ACCESS_TOKEN_TTL_MINUTES`（60）、`REFRESH_TOKEN_TTL_DAYS`（7）、
 `RUSTDESK_SERVER_VERSION`（1.1.16，hbbs/hbbr 的 compose 锁定）、`ALLOW_SERVER_UPDATE`
-（true，启用面板的 Server updates 卡片）。
+（true，启用面板的 Server updates 卡片）、`ALLOW_PANEL_UPDATE`
+（true，启用面板自身的面板内更新——仅需点击按钮即可检查并手动更新；面板永远不会自动更新）。
 
 ### 会话时长（JWT TTL）
 
@@ -405,12 +406,19 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 
 ### 管理面板（backend / frontend / nginx / presence）
 
-面板内没有自更新。拉取代码并重新运行幂等的引导脚本：
+面板支持从 GitHub 标签发行版自更新：
 
-```
-git pull
-./setup.sh        # 重建自定义镜像，保留 .env 和 data/
-```
+1. **从面板（Settings → Panel update）**：检查最新**稳定** `vX.Y.Z` 发行版，下载经 SHA-256
+   校验的安装包，替换面板代码并运行 `./setup.sh`（约 1–3 分钟，保留数据和 `.env`，
+   失败时自动回滚）。更新仅在您点击更新按钮时执行——面板从不自动更新。
+   由 `ALLOW_PANEL_UPDATE` 控制（默认 `true`）。
+2. **手动**：拉取代码并重新运行幂等的引导脚本：
+   ```
+   git pull
+   ./setup.sh        # 重建自定义镜像，保留 .env 和 data/
+   ```
+
+当前面板版本显示在侧边栏底部（`backend/internal/appversion/version.go`）。
 
 状态（服务器密钥、设备、面板数据库、TLS 证书）位于 `data/` 和 `.env`，
 `./setup.sh` 绝不触碰。`auth_sessions` 中的会话在重新部署后仍然存活。如果你的

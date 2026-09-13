@@ -216,7 +216,9 @@ Admin credentials). Пароль должен быть ≥8 символов (п
 новом стеке hbbs генерирует ключ в `data/hbbs`), `RUSTDESK_ID_PORT`,
 `RUSTDESK_RELAY_PORT`, `RUSTDESK_WS_PORT`, `ACCESS_TOKEN_TTL_MINUTES` (60),
 `REFRESH_TOKEN_TTL_DAYS` (7), `RUSTDESK_SERVER_VERSION` (1.1.16, пин compose для
-hbbs/hbbr), `ALLOW_SERVER_UPDATE` (true, включает карточку Server updates в панели).
+hbbs/hbbr), `ALLOW_SERVER_UPDATE` (true, включает карточку Server updates в панели),
+`ALLOW_PANEL_UPDATE` (true, включает карточку Panel update в панели — проверка
+и обновление только по кнопке; автоматического самообновления нет).
 
 ### Срок жизни сессии (JWT TTL)
 
@@ -426,13 +428,22 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 
 ### Админпанель (backend / frontend / nginx / presence)
 
-Внутри панели автоапдейта нет. Скачайте код и перезапустите идемпотентный
-bootstrap:
+Панель умеет обновляться сама из тегированного релиза на GitHub:
 
-```
-git pull
-./setup.sh        # пересобирает кастомные образы, сохраняя .env и data/
-```
+1. **Из панели (Settings → Panel update)**: проверяется последний **стабильный**
+   релиз `vX.Y.Z`, скачивается проверенный по контрольной сумме бандл, код
+   панели заменяется и выполняется `./setup.sh` (~1–3 мин; данные и `.env`
+   сохраняются, при сбое — автоматический откат). Обновление запускается
+   только нажатием кнопки — сама панель никогда не обновляется автоматически.
+   Управляется `ALLOW_PANEL_UPDATE` (по умолчанию `true`).
+2. **Вручную**: скачайте код и перезапустите идемпотентный bootstrap:
+   ```
+   git pull
+   ./setup.sh        # пересобирает кастомные образы, сохраняя .env и data/
+   ```
+
+Текущая версия панели показана в футере
+(`backend/internal/appversion/version.go`).
 
 Состояние (ключ сервера, устройства, БД панели, TLS-сертификаты) живёт в `data/`
 и `.env` и никогда не трогается `./setup.sh`. Сессии из `auth_sessions` переживают
