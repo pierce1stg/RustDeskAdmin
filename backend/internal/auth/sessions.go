@@ -17,6 +17,10 @@ import (
 // single-use) and every session is revoked when the credentials change, so a
 // stolen refresh token stops working as soon as it is reused or credentials
 // are rotated.
+// errInvalidSession marks a refresh token whose session is missing or already
+// rotated/expired.
+var errInvalidSession = errors.New("invalid session")
+
 type sessionStore struct {
 	pool *pgxpool.Pool
 }
@@ -37,11 +41,16 @@ func (s *sessionStore) ensureTable(ctx context.Context) error {
 			expires_at TIMESTAMPTZ NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions (expires_at)`)
 	return err
 }
 
-// pruneExpiredLocked removes sessions whose expiry has passed. Called before
-// issuing new tokens so the table cannot grow without bound.
+// pruneExpired removes sessions whose expiry has passed. Called before issuing
+// new tokens so the table cannot grow without bound.
 func (s *sessionStore) pruneExpired(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM auth_sessions WHERE expires_at <= NOW()`)
 	return err
@@ -55,9 +64,12 @@ func (s *sessionStore) issue(ctx context.Context, userID, email string, ttl time
 	if err := s.pruneExpired(ctx); err != nil {
 		return "", time.Time{}, err
 	}
-	jti := newJTI()
+	jti, err := newJTI()
+	if err != nil {
+		return "", time.Time{}, err
+	}
 	expiry := time.Now().Add(ttl)
-	_, err := s.pool.Exec(ctx,
+	_, err = s.pool.Exec(ctx,
 		`INSERT INTO auth_sessions (jti, user_id, email, expires_at) VALUES ($1, $2, $3, $4)`,
 		jti, userID, email, expiry,
 	)
@@ -67,34 +79,35 @@ func (s *sessionStore) issue(ctx context.Context, userID, email string, ttl time
 	return jti, expiry, nil
 }
 
-// isValid reports whether jti belongs to a live session, deleting the row once
-// it has expired.
-func (s *sessionStore) isValid(ctx context.Context, jti string) (bool, error) {
+// consume atomically validates and rotates a session: the row is deleted only
+// if it exists and has not expired, so two concurrent refreshes with the same
+// token cannot both succeed. errInvalidSession marks a missing/expired/foreign
+// token (already rotated).
+func (s *sessionStore) consume(ctx context.Context, jti string) error {
 	if jti == "" {
-		return false, nil
+		return errInvalidSession
 	}
 	if err := s.ensureTable(ctx); err != nil {
-		return false, err
+		return err
 	}
-	var expiresAt time.Time
+	// Best-effort: keep the table small on every rotation too.
+	_, _ = s.pool.Exec(ctx, `DELETE FROM auth_sessions WHERE expires_at <= NOW()`)
+	var deleted string
 	err := s.pool.QueryRow(ctx,
-		`SELECT expires_at FROM auth_sessions WHERE jti = $1`, jti,
-	).Scan(&expiresAt)
+		`DELETE FROM auth_sessions WHERE jti = $1 AND expires_at > NOW() RETURNING jti`, jti,
+	).Scan(&deleted)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return errInvalidSession
 	}
-	if err != nil {
-		return false, err
-	}
-	if !expiresAt.After(time.Now()) {
-		_, _ = s.pool.Exec(ctx, `DELETE FROM auth_sessions WHERE jti = $1`, jti)
-		return false, nil
-	}
-	return true, nil
+	return err
 }
 
-// revoke drops a single session (refresh token rotation).
+// revoke drops a single session (logout). Missing rows are not an error:
+// logout is idempotent.
 func (s *sessionStore) revoke(ctx context.Context, jti string) error {
+	if jti == "" {
+		return nil
+	}
 	if err := s.ensureTable(ctx); err != nil {
 		return err
 	}
@@ -113,10 +126,10 @@ func (s *sessionStore) revokeAll(ctx context.Context) error {
 
 // newJTI returns a random token identifier used to correlate refresh tokens
 // with their server-side session entries.
-func newJTI() string {
+func newJTI() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		panic(err)
+		return "", err
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }

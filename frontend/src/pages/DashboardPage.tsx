@@ -287,7 +287,7 @@ function ServerConnRow({
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 transition-colors hover:bg-muted/40"
+        className="raw-focus flex w-full select-none items-center justify-between gap-2 px-3 py-2.5 transition-colors hover:bg-muted/40"
         aria-expanded={expanded}
       >
         <span className="flex min-w-0 items-center gap-2">

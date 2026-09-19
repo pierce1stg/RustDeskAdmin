@@ -1,6 +1,8 @@
 # Dependencies
 node_modules/
-vendor/
+# Go modules resolve at build. NOTE: narrow rule on purpose — the small
+# frontend vendored lib (tweetnacl) IS tracked, so no bare vendor/ line.
+backend/vendor/
 
 # Build outputs
 dist/
@@ -54,10 +56,33 @@ coverage/
 *.sqlite3
 *.db
 
+# Test env (isolated install; configs are tracked)
+frontend/.vitest-env/node_modules/
+frontend/.vitest-env/.playwright/
+frontend/.vitest-env/.vite-cache/
+
 # Temporary
 tmp/
 temp/
 *.tmp
+*.out
+*.tgz
+*.tar.gz
+*.zip
+*MERGE*.py
+SETTINGS_MERGE*
+# Local backups / dumps (never public)
+*.bak
+*.backup
+*.orig
+dump.sql
+backup.sql
+db.dump
+*.sqlite-journal
+*.db-journal
+id_rsa
+id_ed25519
+*.p12
 
 # Build artifacts
 backend/bin/

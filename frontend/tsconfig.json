@@ -21,5 +21,8 @@
     }
   },
   "include": ["src"],
+  // Unit/integration tests run under vitest with its own type scope
+  // (see .vitest-env/tsconfig.tests.json) — never part of the prod build.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

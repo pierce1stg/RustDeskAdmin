@@ -21,7 +21,10 @@ gen_secret() {
 }
 
 # Fill empty or placeholder secrets in .env
-for KEY in POSTGRES_PASSWORD JWT_SECRET JWT_REFRESH_SECRET; do
+# DEVICE_SECRET is the dedicated at-rest key for saved device passwords.
+# Existing installs without it keep working: the backend falls back to
+# JWT_SECRET for decrypting old rows.
+for KEY in POSTGRES_PASSWORD JWT_SECRET JWT_REFRESH_SECRET DEVICE_SECRET; do
     line=$(grep -E "^$KEY=" "$ENV_FILE" | head -1 || true)
     val=${line#*=}
     if [ -z "$val" ] || [ "$val" = "changeme" ]; then

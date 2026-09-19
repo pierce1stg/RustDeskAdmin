@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "..",
+    "types": ["node"],
+    "typeRoots": ["../.vitest-env/node_modules/@types", "../node_modules/@types"],
+    "paths": {
+      "@/*": ["src/*"],
+      "vitest": ["../.vitest-env/node_modules/vitest/dist/index.d.ts"]
+    }
+  },
+  "include": ["../src/**/*.test.ts", "../src/**/*.test.tsx"],
+  "references": []
+}

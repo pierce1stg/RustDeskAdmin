@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PasswordInput } from '@/components/ui/password-input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useLogin } from '@/api/auth'
@@ -73,7 +74,7 @@ export function LoginPage() {
                 id="username"
                 type="text"
                 placeholder={t('login.usernamePlaceholder')}
-                autoComplete="off"
+                autoComplete="username"
                 {...register('username')}
                 disabled={isPending}
               />
@@ -81,11 +82,10 @@ export function LoginPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">{t('login.password')}</Label>
-              <Input
+              <PasswordInput
                 id="password"
-                type="password"
                 placeholder="••••••••"
-                autoComplete="new-password"
+                autoComplete="current-password"
                 {...register('password')}
                 disabled={isPending}
               />

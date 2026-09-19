@@ -1,12 +1,12 @@
 
-import { useAuthStore } from '@/stores/auth'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { LogOut, Settings, User, Menu } from 'lucide-react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { useUiStore } from '@/stores/ui'
+import { logoutRemote } from '@/api/auth'
 
 const TITLES: Record<string, string> = {
   '/': 'nav.dashboard',
@@ -17,11 +17,15 @@ const TITLES: Record<string, string> = {
 
 export function Header() {
   const { t } = useTranslation()
-  const { logout } = useAuthStore()
   const { setMobileOpen } = useUiStore()
   const location = useLocation()
-  const titleKey = TITLES[location.pathname]
+  const navigate = useNavigate()
+  const titleKey = location.pathname.startsWith('/control/') ? 'control.nav' : TITLES[location.pathname]
   const currentTitle = titleKey ? t(titleKey) : ''
+
+  const handleLogout = () => {
+    void logoutRemote().finally(() => navigate('/login', { replace: true }))
+  }
 
   return (
     <header className="neu-header sticky top-0 z-30 h-16">
@@ -33,6 +37,7 @@ export function Header() {
             className="h-8 w-8 shrink-0 lg:hidden"
             onClick={() => setMobileOpen(true)}
             title={t('header.openMenu')}
+            aria-label={t('header.openMenu')}
           >
             <Menu className="h-5 w-5" />
           </Button>
@@ -48,6 +53,7 @@ export function Header() {
                 size="icon"
                 className="neu-ghost-icon relative h-9 w-9 rounded-full"
                 title={t('header.user')}
+                aria-label={t('header.user')}
               >
                 <User className="h-5 w-5" />
               </Button>
@@ -60,7 +66,7 @@ export function Header() {
                 </Link>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={logout} className="text-red-600 focus:text-red-600">
+              <DropdownMenuItem onClick={handleLogout} className="text-red-600 focus:text-red-600">
                 <LogOut className="me-2 h-4 w-4" />
                 {t('nav.logout')}
               </DropdownMenuItem>

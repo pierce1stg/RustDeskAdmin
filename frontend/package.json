@@ -1,13 +1,18 @@
 {
   "name": "rustdesk-admin-frontend",
   "private": true,
-  "version": "0.0.1",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 5173",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "test": "bash .vitest-env/run-tests.sh",
+    "test:watch": "bash .vitest-env/run-tests.sh --watch",
+    "test:coverage": "bash .vitest-env/run-tests.sh --coverage",
+    "test:types": "tsc --noEmit -p .vitest-env/tsconfig.tests.json",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
@@ -29,7 +34,8 @@
     "react-router-dom": "^6.22.3",
     "tailwind-merge": "^2.2.1",
     "zod": "^3.22.4",
-    "zustand": "^5.0.15"
+    "zustand": "^5.0.15",
+    "fzstd": "0.1.1"
   },
   "devDependencies": {
     "@types/react": "^18.2.56",

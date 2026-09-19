@@ -33,7 +33,7 @@ help:
 	@echo "  make shell-frontend   - shell into frontend container"
 	@echo "  make shell-db         - psql into postgres"
 	@echo ""
-@echo "Other:"
+	@echo "Other:"
 	@echo "  make check           - run bash-based git anonymity guard (no real data in git)"
 	@echo "  make test            - run Go tests (backend container)"
 	@echo "  make env-check       - verify .env exists"

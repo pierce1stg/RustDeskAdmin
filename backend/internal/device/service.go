@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -37,7 +38,20 @@ type Service struct {
 	logger       *zap.Logger
 	settings     *settings.Store
 
+	// encSecret encrypts device passwords at rest (AES-256-GCM keyed by
+	// SHA-256 of the panel's device secret). encFallback is the legacy
+	// JWT-derived key, tried on decrypt only so rotating to a dedicated
+	// secret does not lose already-saved passwords.
+	encSecret   []byte
+	encFallback []byte
+
 	mu sync.Mutex
+
+	// schemaOnce guards the lazy ADD COLUMN migrations for the password fields.
+	schemaOnce sync.Once
+	// peerinfoSchemaOnce guards the lazy ADD COLUMN migrations for the
+	// PeerInfo snapshot fields (same reason, separate gate).
+	peerinfoSchemaOnce sync.Once
 
 	lastPresence *presenceSnapshot
 
@@ -53,8 +67,6 @@ type Service struct {
 
 	// onlineState is the hex peer -> online flag as last written/published.
 	onlineState map[string]bool
-
-	refreshInt int
 
 	subs       map[chan StatusEvent]struct{}
 	lastStatus *StatusEvent
@@ -85,15 +97,41 @@ type StatusEvent struct {
 }
 
 type Device struct {
-	ID        uuid.UUID  `json:"id"`
-	PeerID    string     `json:"peer_id"`
-	Alias     *string    `json:"alias"`
-	Pinned    bool       `json:"pinned"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	LastSeen  *time.Time `json:"last_seen,omitempty"`
-	Online    bool       `json:"online"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ID            uuid.UUID  `json:"id"`
+	PeerID        string     `json:"peer_id"`
+	Alias         *string    `json:"alias"`
+	Pinned        bool       `json:"pinned"`
+	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+	LastSeen      *time.Time `json:"last_seen,omitempty"`
+	Online        bool       `json:"online"`
+	PasswordSaved bool       `json:"password_saved"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	// Last-known PeerInfo snapshot (written by the web client on session
+	// login; NULL until the first panel connect).
+	Hostname          *string    `json:"hostname,omitempty"`
+	Username          *string    `json:"username,omitempty"`
+	Platform          *string    `json:"platform,omitempty"`
+	HostVersion       *string    `json:"host_version,omitempty"`
+	Displays          *string    `json:"displays,omitempty"`
+	PeerinfoUpdatedAt *time.Time `json:"peerinfo_updated_at,omitempty"`
+}
+
+// PeerInfoDisplay is one monitor as reported by the host.
+type PeerInfoDisplay struct {
+	Name   string `json:"name,omitempty"`
+	X      int    `json:"x,omitempty"`
+	Y      int    `json:"y,omitempty"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+type UpdatePeerInfoRequest struct {
+	Hostname    *string           `json:"hostname"`
+	Username    *string           `json:"username"`
+	Platform    *string           `json:"platform"`
+	HostVersion *string           `json:"host_version"`
+	Displays    []PeerInfoDisplay `json:"displays"`
 }
 
 type StatusConn struct {
@@ -138,28 +176,62 @@ type UpdateDeviceRequest struct {
 	Pinned *bool   `json:"pinned"`
 }
 
-func NewService(pool *pgxpool.Pool, hbbDBPath, presencePath string, settingsStore *settings.Store, logger *zap.Logger) *Service {
+func NewService(pool *pgxpool.Pool, hbbDBPath, presencePath string, encSecret string, settingsStore *settings.Store, logger *zap.Logger, encFallback ...string) *Service {
+	fallback := ""
+	if len(encFallback) > 0 {
+		fallback = encFallback[0]
+	}
+	var fallbackBytes []byte
+	if fallback != "" && fallback != encSecret {
+		fallbackBytes = []byte(fallback)
+	}
 	return &Service{
 		pool:         pool,
 		hbbDBPath:    hbbDBPath,
 		presencePath: presencePath,
 		logger:       logger,
 		settings:     settingsStore,
+		encSecret:    []byte(encSecret),
+		encFallback:  fallbackBytes,
 		lastOnline:   make(map[string]time.Time),
 		peerPrimary:  make(map[string]string),
 		peerInfoIP:   make(map[string]string),
 		onlineState:  make(map[string]bool),
 		subs:         make(map[chan StatusEvent]struct{}),
-		refreshInt:   settings.DefaultRefreshInterval,
 	}
 }
+
+// decryptPassword tries the current device secret first, then the legacy
+// JWT-derived key, so migrating to a dedicated secret never loses rows.
+func (s *Service) decryptPassword(enc string) (string, error) {
+	plain, err := decryptSecret(s.encSecret, enc)
+	if err == nil {
+		return plain, nil
+	}
+	if len(s.encFallback) > 0 {
+		if fallback, ferr := decryptSecret(s.encFallback, enc); ferr == nil {
+			return fallback, nil
+		}
+	}
+	return "", err
+}
+
+// maxStatusSubscribers caps concurrent SSE holders so one authenticated
+// client cannot exhaust file descriptors / memory with endless streams.
+const maxStatusSubscribers = 200
+
+// maxSearchLen caps the devices search string (LIKE wildcards make long
+// patterns expensive).
+const maxSearchLen = 64
+
+// maxAliasLen caps device aliases stored via the panel.
+const maxAliasLen = 64
 
 func (s *Service) refreshInterval() time.Duration {
 	if s.settings == nil {
 		return time.Duration(settings.DefaultRefreshInterval) * time.Second
 	}
 	sec := s.settings.GetRefreshInterval(context.Background())
-	s.refreshInt = sec
 	return time.Duration(sec) * time.Second
 }
 
@@ -299,6 +371,54 @@ func (s *Service) enrichConns(raw []presenceConn, aliases map[string]string) ([]
 		}
 	}
 	for hexID, ip := range s.peerInfoIP {
+		if ip != "" {
+			peerByIP[ip] = append(peerByIP[ip], hexID)
+		}
+	}
+
+	seen := map[string]struct{}{}
+	count := 0
+	out := make([]StatusConn, 0, len(raw))
+	for _, rc := range raw {
+		conn := StatusConn{IP: rc.IP, Port: rc.Port}
+		localSeen := map[string]struct{}{}
+		for _, hexID := range peerByIP[rc.IP] {
+			id := normalPeerID(hexID)
+			if _, ok := localSeen[id]; ok {
+				continue
+			}
+			localSeen[id] = struct{}{}
+			if conn.PeerID == "" {
+				conn.PeerID = id
+			}
+			if conn.Alias == "" {
+				conn.Alias = aliases[hexID]
+			}
+		}
+		out = append(out, conn)
+		key := conn.PeerID
+		if key == "" {
+			key = "ip:" + conn.IP
+		}
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			count++
+		}
+	}
+	return out, count
+}
+
+// enrichConnsSnapshot is the lock-free twin of enrichConns for callers that
+// already snapshotted the peer maps (e.g. GetServerStatus serving HTTP while
+// the watcher keeps writing).
+func (s *Service) enrichConnsSnapshot(raw []presenceConn, aliases, peerPrimary, peerInfo map[string]string) ([]StatusConn, int) {
+	peerByIP := map[string][]string{}
+	for hexID, ip := range peerPrimary {
+		if ip != "" {
+			peerByIP[ip] = append(peerByIP[ip], hexID)
+		}
+	}
+	for hexID, ip := range peerInfo {
 		if ip != "" {
 			peerByIP[ip] = append(peerByIP[ip], hexID)
 		}
@@ -559,6 +679,7 @@ func (s *Service) applyStatus(ctx context.Context, online map[string]bool) {
 		if _, err := s.pool.Exec(ctx, `
 			UPDATE devices SET
 				online = $1,
+				deleted_at = CASE WHEN $1 THEN NULL ELSE deleted_at END,
 				last_seen = CASE WHEN $1 THEN NOW() ELSE last_seen END,
 				updated_at = NOW()
 			WHERE peer_id = $2
@@ -600,9 +721,13 @@ func sameOnlineSet(a, b []string) bool {
 	return true
 }
 
-func (s *Service) subscribe() chan StatusEvent {
+func (s *Service) subscribe() (chan StatusEvent, bool) {
 	ch := make(chan StatusEvent, 16)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.subs) >= maxStatusSubscribers {
+		return nil, false
+	}
 	s.subs[ch] = struct{}{}
 	if s.lastStatus != nil {
 		select {
@@ -610,8 +735,7 @@ func (s *Service) subscribe() chan StatusEvent {
 		default:
 		}
 	}
-	s.mu.Unlock()
-	return ch
+	return ch, true
 }
 
 func (s *Service) unsubscribe(ch chan StatusEvent) {
@@ -634,7 +758,11 @@ func (s *Service) StreamDevices(c *gin.Context) {
 		return
 	}
 
-	ch := s.subscribe()
+	ch, ok := s.subscribe()
+	if !ok {
+		c.String(http.StatusServiceUnavailable, "too many stream subscribers")
+		return
+	}
 	defer s.unsubscribe(ch)
 
 	ctx := c.Request.Context()
@@ -660,26 +788,333 @@ func (s *Service) StreamDevices(c *gin.Context) {
 }
 
 func (s *Service) GetServerStatus(c *gin.Context) {
+	// Snapshot presence and peer maps under the lock, then do the
+	// (potentially slow) DB lookup outside of it so status watchers are
+	// never blocked on I/O.
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	snap := s.lastPresence
+	peerPrimary := make(map[string]string, len(s.peerPrimary))
+	for k, v := range s.peerPrimary {
+		peerPrimary[k] = v
+	}
+	peerInfo := make(map[string]string, len(s.peerInfoIP))
+	for k, v := range s.peerInfoIP {
+		peerInfo[k] = v
+	}
+	s.mu.Unlock()
 
 	status := ServerStatus{}
-	if s.lastPresence != nil {
-		status.HbbsListening = s.lastPresence.HbbsListening
-		status.HbbrListening = s.lastPresence.HbbrListening
-		status.RelayActive = len(s.lastPresence.Hbbr) > 0
-		status.HbbsClients = s.lastPresence.Hbbs
-		status.RelayClients = s.lastPresence.Hbbr
-		status.HbbsVersion = s.lastPresence.HbbsVersion
-		status.HbbrVersion = s.lastPresence.HbbrVersion
-		status.UpdatedAt = time.Unix(s.lastPresence.Ts, 0)
+	if snap != nil {
+		status.HbbsListening = snap.HbbsListening
+		status.HbbrListening = snap.HbbrListening
+		status.RelayActive = len(snap.Hbbr) > 0
+		status.HbbsClients = snap.Hbbs
+		status.RelayClients = snap.Hbbr
+		status.HbbsVersion = snap.HbbsVersion
+		status.HbbrVersion = snap.HbbrVersion
+		status.UpdatedAt = time.Unix(snap.Ts, 0)
 
-		ctx := c.Request.Context()
-		aliases := s.deviceAliases(ctx)
-		status.HbbsConns, status.HbbsDevices = s.enrichConns(s.lastPresence.HbbsConns, aliases)
-		status.HbbrConns, status.HbbrDevices = s.enrichConns(s.lastPresence.HbbrConns, aliases)
+		aliases := s.deviceAliases(c.Request.Context())
+		status.HbbsConns, status.HbbsDevices = s.enrichConnsSnapshot(snap.HbbsConns, aliases, peerPrimary, peerInfo)
+		status.HbbrConns, status.HbbrDevices = s.enrichConnsSnapshot(snap.HbbrConns, aliases, peerPrimary, peerInfo)
 	}
 	c.JSON(200, status)
+}
+
+// EnsurePasswordSchema adds the password columns to an already-seeded Postgres
+// volume (the docker-entrypoint migrations only run on first init). It runs
+// once at bootstrap; schema writes are deliberately not performed on request
+// hot paths, where a read-only database role would fail on every GET.
+func (s *Service) EnsurePasswordSchema(ctx context.Context) error {
+	var err error
+	s.schemaOnce.Do(func() {
+		_, err = s.pool.Exec(ctx, `
+			ALTER TABLE devices
+				ADD COLUMN IF NOT EXISTS password_enc TEXT,
+				ADD COLUMN IF NOT EXISTS password_updated_at TIMESTAMPTZ
+		`)
+		if err == nil {
+			_, err = s.pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_devices_password ON devices (id) WHERE password_enc IS NOT NULL`)
+		}
+	})
+	return err
+}
+
+// EnsurePeerInfoSchema adds the PeerInfo snapshot columns to an
+// already-seeded Postgres volume (the docker-entrypoint migrations only run
+// on first init). Same once-at-bootstrap pattern as EnsurePasswordSchema.
+func (s *Service) EnsurePeerInfoSchema(ctx context.Context) error {
+	var err error
+	s.peerinfoSchemaOnce.Do(func() {
+		_, err = s.pool.Exec(ctx, `
+			ALTER TABLE devices
+				ADD COLUMN IF NOT EXISTS hostname TEXT,
+				ADD COLUMN IF NOT EXISTS username TEXT,
+				ADD COLUMN IF NOT EXISTS platform TEXT,
+				ADD COLUMN IF NOT EXISTS host_version TEXT,
+				ADD COLUMN IF NOT EXISTS displays JSONB,
+				ADD COLUMN IF NOT EXISTS peerinfo_updated_at TIMESTAMPTZ
+		`)
+	})
+	return err
+}
+
+func (s *Service) GetDevicePassword(c *gin.Context) {
+	id, ok := deviceIDParam(c)
+	if !ok {
+		return
+	}
+
+	var enc sql.NullString
+	err := s.pool.QueryRow(c.Request.Context(),
+		`SELECT password_enc FROM devices WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&enc)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "device not found"})
+		return
+	}
+	if !enc.Valid || enc.String == "" {
+		c.JSON(404, gin.H{"error": "no saved password"})
+		return
+	}
+
+	plain, err := s.decryptPassword(enc.String)
+	if err != nil {
+		s.logger.Warn("device password decrypt failed (encryption key changed?)", zap.Error(err))
+		c.JSON(500, gin.H{"error": "saved password cannot be decrypted (encryption key changed?)"})
+		return
+	}
+	c.JSON(200, gin.H{"password": plain})
+}
+
+func (s *Service) SaveDevicePassword(c *gin.Context) {
+	id, ok := deviceIDParam(c)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid request body"})
+		return
+	}
+	if req.Password == "" || len(req.Password) > 255 {
+		c.JSON(400, gin.H{"error": "password must be non-empty and at most 255 chars"})
+		return
+	}
+
+	enc, err := encryptSecret(s.encSecret, req.Password)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to encrypt password"})
+		return
+	}
+
+	result, err := s.pool.Exec(c.Request.Context(), `
+		UPDATE devices SET
+			password_enc = $1,
+			password_updated_at = NOW(),
+			updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL
+	`, enc, id)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to save password"})
+		return
+	}
+	if result.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "device not found"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "password saved"})
+}
+
+func (s *Service) DeleteDevicePassword(c *gin.Context) {
+	id, ok := deviceIDParam(c)
+	if !ok {
+		return
+	}
+
+	result, err := s.pool.Exec(c.Request.Context(), `
+		UPDATE devices SET password_enc = NULL, password_updated_at = NULL, updated_at = NOW()
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to clear password"})
+		return
+	}
+	if result.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "device not found"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "password cleared"})
+}
+
+func deviceIDParam(c *gin.Context) (uuid.UUID, bool) {
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid device ID"})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// GetPeerPassword resolves a user-facing (decimal) peer id to its stored
+// password so the web client can pre-fill it on the /control/:id page.
+func (s *Service) GetPeerPassword(c *gin.Context) {
+	peerID := strings.TrimSpace(c.Param("peerId"))
+	if peerID == "" {
+		c.JSON(400, gin.H{"error": "peer id is required"})
+		return
+	}
+	hexID := strings.ToUpper(hex.EncodeToString([]byte(peerID)))
+
+	var enc sql.NullString
+	err := s.pool.QueryRow(c.Request.Context(),
+		`SELECT password_enc FROM devices WHERE peer_id = $1 AND deleted_at IS NULL`, hexID).Scan(&enc)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "device not found"})
+		return
+	}
+	if !enc.Valid || enc.String == "" {
+		c.JSON(404, gin.H{"error": "no saved password"})
+		return
+	}
+
+	plain, err := s.decryptPassword(enc.String)
+	if err != nil {
+		s.logger.Warn("peer password decrypt failed (encryption key changed?)", zap.Error(err))
+		c.JSON(500, gin.H{"error": "saved password cannot be decrypted (encryption key changed?)"})
+		return
+	}
+	c.JSON(200, gin.H{"password": plain})
+}
+
+// SavePeerPassword stores (or replaces) the saved password for a uer-facing
+// peer id. Used by the "remember password" checkbox on the control page.
+func (s *Service) SavePeerPassword(c *gin.Context) {
+	peerID := strings.TrimSpace(c.Param("peerId"))
+	if peerID == "" {
+		c.JSON(400, gin.H{"error": "peer id is required"})
+		return
+	}
+	hexID := strings.ToUpper(hex.EncodeToString([]byte(peerID)))
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid request body"})
+		return
+	}
+	if req.Password == "" || len(req.Password) > 255 {
+		c.JSON(400, gin.H{"error": "password must be non-empty and at most 255 chars"})
+		return
+	}
+
+	enc, err := encryptSecret(s.encSecret, req.Password)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to encrypt password"})
+		return
+	}
+
+	result, err := s.pool.Exec(c.Request.Context(), `
+		UPDATE devices SET
+			password_enc = $1,
+			password_updated_at = NOW(),
+			updated_at = NOW()
+		WHERE peer_id = $2 AND deleted_at IS NULL
+	`, enc, hexID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to save password"})
+		return
+	}
+	if result.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "device not found"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "password saved"})
+}
+
+// maxPeerInfoLen caps PeerInfo snapshot strings stored via the panel.
+const maxPeerInfoLen = 128
+
+// UpdatePeerInfo stores the last-known PeerInfo snapshot for a user-facing
+// peer id. Called by the web client once per session on login OK (PeerInfo
+// only exists inside a live encrypted session, so the panel can only ever
+// snapshot it, never poll it).
+func (s *Service) UpdatePeerInfo(c *gin.Context) {
+	peerID := strings.TrimSpace(c.Param("peerId"))
+	if peerID == "" {
+		c.JSON(400, gin.H{"error": "peer id is required"})
+		return
+	}
+	hexID := strings.ToUpper(hex.EncodeToString([]byte(peerID)))
+
+	var req UpdatePeerInfoRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid request body"})
+		return
+	}
+	for _, v := range []*string{req.Hostname, req.Username, req.Platform, req.HostVersion} {
+		if v != nil && len(*v) > maxPeerInfoLen {
+			c.JSON(400, gin.H{"error": "peerinfo field is too long (max 128 characters)"})
+			return
+		}
+	}
+	if len(req.Displays) > 16 {
+		c.JSON(400, gin.H{"error": "too many displays (max 16)"})
+		return
+	}
+	for _, d := range req.Displays {
+		if err := validatePeerInfoDisplay(d); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	displaysJSON, err := json.Marshal(req.Displays)
+	if err != nil || string(displaysJSON) == "null" {
+		displaysJSON = []byte("[]")
+		err = nil
+	}
+
+	result, err := s.pool.Exec(c.Request.Context(), `
+		UPDATE devices SET
+			hostname = $1,
+			username = $2,
+			platform = $3,
+			host_version = $4,
+			displays = $5,
+			peerinfo_updated_at = NOW(),
+			updated_at = NOW()
+		WHERE peer_id = $6 AND deleted_at IS NULL
+	`, nullStr(req.Hostname), nullStr(req.Username), nullStr(req.Platform), nullStr(req.HostVersion), string(displaysJSON), hexID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to save peer info"})
+		return
+	}
+	if result.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "device not found"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "peer info saved"})
+}
+
+func nullStr(s *string) interface{} {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
+func validatePeerInfoDisplay(d PeerInfoDisplay) error {
+	if len(d.Name) > maxPeerInfoLen {
+		return errors.New("invalid display entry")
+	}
+	if d.Width < 1 || d.Width > 16384 || d.Height < 1 || d.Height > 16384 {
+		return errors.New("invalid display entry")
+	}
+	return nil
 }
 
 func (s *Service) ListDevices(c *gin.Context) {
@@ -700,7 +1135,11 @@ func (s *Service) ListDevices(c *gin.Context) {
 	offset := (page - 1) * limit
 
 	query := `
-		SELECT id, peer_id, alias, pinned, deleted_at, last_seen, online, created_at, updated_at
+		SELECT id, peer_id, alias, pinned, deleted_at, last_seen, online,
+		       password_enc IS NOT NULL AND password_enc <> '' AS password_saved,
+		       created_at, updated_at,
+		       hostname, username, platform, host_version,
+		       displays::text, peerinfo_updated_at
 		FROM devices
 		WHERE deleted_at IS NULL
 	`
@@ -708,8 +1147,12 @@ func (s *Service) ListDevices(c *gin.Context) {
 	argIdx := 1
 
 	if req.Search != "" {
-		query += " AND (alias ILIKE " + sqlArg(argIdx) + " OR peer_id ILIKE " + sqlArg(argIdx) + ")"
-		args = append(args, "%"+req.Search+"%")
+		search := req.Search
+		if len(search) > maxSearchLen {
+			search = search[:maxSearchLen]
+		}
+		query += " AND (alias ILIKE " + sqlArg(argIdx) + " OR peer_id ILIKE " + sqlArg(argIdx) + " OR hostname ILIKE " + sqlArg(argIdx) + " OR username ILIKE " + sqlArg(argIdx) + ")"
+		args = append(args, "%"+search+"%")
 		argIdx++
 	}
 
@@ -726,7 +1169,7 @@ func (s *Service) ListDevices(c *gin.Context) {
 	}
 
 	// Count total
-	countQuery := strings.Replace(query, "SELECT id, peer_id, alias, pinned, deleted_at, last_seen, online, created_at, updated_at", "SELECT COUNT(*)", 1)
+	countQuery := "SELECT COUNT(*)" + query[strings.Index(query, "FROM devices"):]
 	var total int64
 	err := s.pool.QueryRow(c.Request.Context(), countQuery, args...).Scan(&total)
 	if err != nil {
@@ -750,12 +1193,32 @@ func (s *Service) ListDevices(c *gin.Context) {
 		var alias sql.NullString
 		var deletedAt sql.NullTime
 		var lastSeen sql.NullTime
-		if err := rows.Scan(&d.ID, &d.PeerID, &alias, &d.Pinned, &deletedAt, &lastSeen, &d.Online, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		var hostname, username, platform, hostVersion, displays sql.NullString
+		var peerinfoUpdatedAt sql.NullTime
+		if err := rows.Scan(&d.ID, &d.PeerID, &alias, &d.Pinned, &deletedAt, &lastSeen, &d.Online, &d.PasswordSaved, &d.CreatedAt, &d.UpdatedAt, &hostname, &username, &platform, &hostVersion, &displays, &peerinfoUpdatedAt); err != nil {
 			c.JSON(500, gin.H{"error": "failed to scan device"})
 			return
 		}
 		if alias.Valid {
 			d.Alias = &alias.String
+		}
+		if hostname.Valid {
+			d.Hostname = &hostname.String
+		}
+		if username.Valid {
+			d.Username = &username.String
+		}
+		if platform.Valid {
+			d.Platform = &platform.String
+		}
+		if hostVersion.Valid {
+			d.HostVersion = &hostVersion.String
+		}
+		if displays.Valid {
+			d.Displays = &displays.String
+		}
+		if peerinfoUpdatedAt.Valid {
+			d.PeerinfoUpdatedAt = &peerinfoUpdatedAt.Time
 		}
 		if deletedAt.Valid {
 			d.DeletedAt = &deletedAt.Time
@@ -794,6 +1257,10 @@ func (s *Service) UpdateDevice(c *gin.Context) {
 	argIdx := 1
 
 	if req.Alias != nil {
+		if len(*req.Alias) > maxAliasLen {
+			c.JSON(400, gin.H{"error": "alias is too long (max 64 characters)"})
+			return
+		}
 		setParts = append(setParts, "alias = "+sqlArg(argIdx))
 		args = append(args, *req.Alias)
 		argIdx++

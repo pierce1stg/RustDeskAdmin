@@ -111,9 +111,25 @@
     overflow-x: hidden;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
+  /* Panel design rule: form labels are always block-level, stacked above
+     their control. Inline labels let width-capped controls slide onto the
+     label line and squeeze fields (download settings incident). Elements
+     that need row layout carry their own display class (flex wins). */
+  label {
+    display: block;
+  }
 }
 
 @layer components {
+  /* Visible keyboard focus for custom (non-shadcn) interactive surfaces:
+     collapsible headers, journal header, filter chips, chat bubble and its
+     buttons, toolbar zoom buttons, carousel arrows. shadcn Button/Input
+     carry their own ring — don't double up. */
+  .raw-focus:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
   .neu-btn {
     display: inline-flex;
     align-items: center;

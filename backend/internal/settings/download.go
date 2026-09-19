@@ -30,7 +30,7 @@ var KnownDownloadPlatforms = []string{"windows", "macos", "linux", "android", "i
 const DefaultRustDeskVersion = "1.4.9"
 
 // MaxScreenshotSize is the per-file upload limit.
-var MaxScreenshotSize = int64(10 << 20) // 10 MiB
+const MaxScreenshotSize = int64(10 << 20) // 10 MiB
 
 // AllowedScreenshotExts mirrors the file extensions the upload endpoint keeps.
 var AllowedScreenshotExts = map[string]bool{

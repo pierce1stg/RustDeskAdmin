@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/auth'
 import { LoginPage } from '@/pages/LoginPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DevicesPage } from '@/pages/DevicesPage'
+import { RemoteControlPage } from '@/pages/RemoteControlPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { DownloadPage } from '@/pages/DownloadPage'
 import { DownloadConfigPage } from '@/pages/DownloadConfigPage'
@@ -42,11 +43,12 @@ export function App() {
       >
         <Route index element={<DashboardPage />} />
         <Route path="devices" element={<DevicesPage />} />
+        <Route path="control/:id" element={<RemoteControlPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="download-config" element={<DownloadConfigPage />} />
       </Route>
       <Route path="/download" element={<DownloadPage />} />
-      <Route path="*" element={<Navigate to="/devices" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }

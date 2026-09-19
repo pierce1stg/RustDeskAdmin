@@ -1,5 +1,10 @@
 # RustDesk Admin
 
+<p>
+  <a href="https://github.com/pierce1stg/RustDeskAdmin/actions"><img src="https://github.com/pierce1stg/RustDeskAdmin/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/pierce1stg/RustDeskAdmin/releases/latest"><img src="https://img.shields.io/github/v/release/pierce1stg/RustDeskAdmin" alt="latest release" /></a>
+</p>
+
 <p align="center">
   [<a href="docs/README-RU.md">Русский</a>] | [<a href="docs/README-ZH.md">中文</a>] | [<a href="docs/README-AR.md">العربية</a>]<br>
 </p>
@@ -16,12 +21,12 @@ re-running `./setup.sh` never lose state or settings.
 > hand-written code in this repository.
 
 ```
-rustdesk-stack/
+RustDeskAdmin/
 ├── docker-compose.yml         # 8 services, one network
 ├── docker-compose.dev.yml     # optional overlay: air hot-reload + vite dev server
 ├── setup.sh                   # first-run bootstrap (idempotent)
 ├── .env.example               # template; copy to .env
-├── Makefile                   # helper commands (dev/build/logs/db ...)
+├── Makefile                   # helper commands (dev/build/logs/shell/test …)
 ├── backend/                   # Go admin API (compiled into a small prod image)
 ├── frontend/                  # React admin UI (static nginx / SPA)
 ├── nginx/nginx.conf.template  # ${DOMAIN} + ACME webroot + WSS termination
@@ -30,7 +35,8 @@ rustdesk-stack/
 ├── data/                      # LIVE DATA - created by setup.sh:
 │   ├── hbbs/                  #   hbbs/hbbr key (id_ed25519) + device DB (sqlite)
 │   ├── postgres/              #   Postgres data dir (bind mount)
-│   └── certbot/etc/           #   Let's Encrypt live/archive/renewal
+│   ├── screenshots/           #   download-page uploads (SCREENSHOTS_DIR)
+│   └── certbot/etc/           #   Let's Encrypt live/archive/renewal (+ www/)
 └── status/                    # presence.json (written by the presence container)
 ```
 
@@ -54,6 +60,8 @@ rustdesk-stack/
 - [Certificates (Let's Encrypt)](#certificates-lets-encrypt)
 - [Server Info](#server-info)
 - [RustDesk web client](#rustdesk-web-client)
+- [Browser remote control](#browser-remote-control)
+- [Public download page](#public-download-page)
 - [Client setup code](#client-setup-code)
 - [Development mode (dev overlay)](#development-mode-dev-overlay)
 - [Download sources and mirrors (Block C)](#download-sources-and-mirrors-block-c)
@@ -69,9 +77,12 @@ rustdesk-stack/
 
 - **Web admin console** (React SPA + Go API):
   - Dashboard — server status summary, live presence.
-  - Devices — list of registered devices (`GET /api/devices`), view details, delete.
-  - Settings — panel settings (seeded from `.env`, then owned by the DB);
-    session lifetime is also configurable here.
+  - Devices — list of registered devices (`GET /api/devices`), PeerInfo columns
+    (host/user/OS/version/displays), search, pin/alias, encrypted saved
+    passwords, view details, delete.
+  - Settings — collapsible sections (state kept per browser), panel settings
+    (seeded from `.env`, then owned by the DB); session lifetime, web-client
+    defaults, chat system messages and client display name are configurable here.
   - Login = JWT access + refresh tokens with server-stored sessions; sessions
     are rotated and pruned as refresh tokens expire; change admin credentials.
 - **Live presence** (`presence` container):
@@ -168,10 +179,12 @@ them yourself, run:
 POSTGRES_PASSWORD=$(openssl rand -base64 32)
 JWT_SECRET=$(openssl rand -base64 32)
 JWT_REFRESH_SECRET=$(openssl rand -base64 32)
+DEVICE_SECRET=$(openssl rand -base64 32)
 ```
 
 ...and put the values into `.env`. Leaving them as `changeme` is fine — the script
-replaces them with random values on the first run.
+replaces them with random values on the first run. `setup.sh` aborts if `DOMAIN`
+is empty or still the `app.example.com` placeholder — set a real hostname first.
 
 `setup.sh` (idempotent) will:
 
@@ -207,17 +220,36 @@ The password must be at least 8 characters (validated by the backend).
 | `POSTGRES_PASSWORD`  | Postgres password (auto-generated if `changeme`)   |
 | `JWT_SECRET`         | API JWT signing secret (auto-generated)            |
 | `JWT_REFRESH_SECRET` | refresh-token secret (auto-generated)              |
+| `DEVICE_SECRET`      | at-rest key for saved device passwords (auto-generated; empty keeps reading old rows via JWT fallback) |
 
 ### Block B (one-time seeds — the panel owns settings afterwards)
 
 `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `STATUS_REFRESH_INTERVAL` (30s),
-`SERVER_DISPLAY_ADDRESS` (optional override), `RUSTDESK_PUBLIC_KEY` (optional; on a
+`STATUS_REFRESH_MODE` (push), `SERVER_DISPLAY_ADDRESS` (optional override),
+`RELAY_ADDRESS` / `RUSTDESK_API_SERVER` (optional Server Info overrides),
+`RUSTDESK_PUBLIC_KEY` (optional; on a
 fresh stack hbbs generates the key in `data/hbbs`), `RUSTDESK_ID_PORT`,
 `RUSTDESK_RELAY_PORT`, `RUSTDESK_WS_PORT`, `ACCESS_TOKEN_TTL_MINUTES` (60),
 `REFRESH_TOKEN_TTL_DAYS` (7), `RUSTDESK_SERVER_VERSION` (1.1.16, compose pin for
 hbbs/hbbr), `ALLOW_SERVER_UPDATE` (true, enables the panel's Server updates card),
 `ALLOW_PANEL_UPDATE` (true, enables the panel's in-panel update card — check
 and apply only on a press of the button; there is no automatic self-update).
+
+### Web-client defaults (one-time seeds, then Settings → Web client)
+
+| Variable | Default | Allowed | Meaning |
+|----------|---------|---------|---------|
+| `WEB_CLIENT_QUALITY` | 3 | 0 (auto), 2, 3, 4 | initial image quality |
+| `WEB_CLIENT_FPS` | 30 | 1..240 | initial frame rate |
+| `WEB_CLIENT_CODEC` | auto | auto, vp8, vp9, av1 | initial codec preference |
+| `WEB_CLIENT_RENDER_SCALE` | auto | auto, original, 144p..1440p | frame detail cap |
+| `WEB_CLIENT_CURSOR` | false | true/false | remote-cursor overlay on |
+| `WEB_CLIENT_INPUT_MODE` | auto | auto, touch, pointer | input mode (`auto` = device detect) |
+| `WEB_CLIENT_NAME` | Web Browser | 1..64 chars | name hosts see for panel sessions |
+| `WEB_CLIENT_CHAT_GREETING` | Hello! How can I help you? | ≤2000 chars, empty = off | auto-greeting on first chat open |
+| `WEB_CLIENT_CHAT_GREETING_ENABLED` | true | true/false | greeting toggle |
+| `WEB_CLIENT_CHAT_CLOSE` | The operator has closed the chat. | ≤2000 chars, empty = off | notice on chat close |
+| `WEB_CLIENT_CHAT_CLOSE_ENABLED` | true | true/false | close-notice toggle |
 
 ### Session lifetime (JWT TTL)
 
@@ -246,7 +278,7 @@ which the panel simply asks to sign in again.
 | `RELAY_PORT`     | 21117   | hbbr relay (tcp+udp)                     |
 | `WSS_ID_PORT`    | 21118   | WSS → hbbs (nginx TLS termination)       |
 | `WSS_RELAY_PORT` | 21119   | WSS → hbbr (nginx TLS termination)       |
-| `API_PORT`       | 8080    | backend port exposed on the host (debug) |
+| `API_PORT`       | 8080    | backend port, loopback-only (`127.0.0.1`, debug via ssh) |
 
 Inside the containers the listening ports are fixed; only the host mapping is
 parameterized. Example: if another service owns host port 443, set
@@ -290,6 +322,40 @@ start and the backend picks it up automatically (`rustdesk-server` source).
 To connect via the web client (https://rustdesk.com/web), point Server Info in the
 panel at your `DOMAIN` and ports, and use the key from the panel. CORS headers in
 nginx allow the `rustdesk.com`/`web.rustdesk.com` origins.
+
+---
+
+## Browser remote control
+
+The panel itself drives remote sessions in the browser (`control/:id`) — no
+desktop client needed:
+
+- **Codecs**: VP8 / VP9 / AV1 software decode (WebCodecs); hardware codecs are
+  deliberately not offered. Auto starts proven-first (`last-good`, else VP9);
+  a manual choice is literal, with a grace period before the host is declared
+  non-compliant and a “back to Auto” banner.
+- **Auto quality ladder** with a deep floor (down to 1/10 on a stuck queue),
+  turbo preset (Low/60/cheapest + one-click restore), render-scale caps.
+- **Session journal v2**: levels, categories, search with highlight, per-class
+  record gating, drop markers, collapsible with a count badge.
+- **Session chat**: floating window + dockable bubble (positions persist),
+  unread badge, emoji picker, configurable greeting / close notice, session-only
+  history. Text only — the protocol has no file transfer or remote chat-close.
+- Clipboard both ways, hotkeys, multi-monitor switch, zoom, touch trackpad,
+  remote-cursor overlay.
+
+Acceptance matrix and journal line reference: `docs/acceptance-EN.md`
+(RU/ZH/AR siblings), human checklist: `docs/manual-checklist.md`.
+
+---
+
+## Public download page
+
+The panel serves a public client-download page (`/download`, configured at
+`/download-config` in the panel): per-locale texts, per-platform sections with
+download buttons, and screenshot uploads (stored under `SCREENSHOTS_DIR`,
+`./data/screenshots` by default — not to be confused with `docs/screenshots/`,
+which holds this README's images).
 
 ---
 
@@ -503,14 +569,19 @@ pin for the version you actually want to keep running.
 |--------|----------------------|----------------------------------------------|
 | POST   | `/api/auth/login`    | sign in, returns access+refresh JWT          |
 | POST   | `/api/auth/refresh`  | refresh the access token                     |
+| POST   | `/api/auth/logout`   | revoke one refresh session (idempotent)      |
 | PUT    | `/api/auth/password` | change admin credentials (≥8 chars)          |
 | GET    | `/api/devices`       | list devices (paginated)                     |
 | PATCH  | `/api/devices/:id`   | update a device (alias, pinned)              |
 | DELETE | `/api/devices/:id`   | delete a device                              |
+| GET    | `/api/devices/:id/password` | saved-password state (never the secret) |
+| PUT    | `/api/devices/:id/password` | store an encrypted device password      |
+| DELETE | `/api/devices/:id/password` | drop the saved password                 |
+| PATCH  | `/api/devices/peer/:peerId/peerinfo` | PeerInfo snapshot (host/version/displays) |
 | GET    | `/api/status`        | live hbbs/hbbr status + presence             |
 | GET    | `/api/devices/stream` | SSE: live online/offline presence updates   |
-| GET    | `/api/settings`      | settings                                     |
-| PUT    | `/api/settings/:key` | update a setting                             |
+| GET    | `/api/settings`      | settings (incl. web-client defaults, chat, client name) |
+| PUT    | `/api/settings/:key` | update a setting (validated per key)         |
 | PUT    | `/api/settings/auth_access_token_ttl_minutes` | set access-token lifetime (minutes) |
 | PUT    | `/api/settings/auth_refresh_token_ttl_days`   | set session lifetime (days)         |
 | GET    | `/api/server-info`   | address/ports/key with sources               |
@@ -518,3 +589,6 @@ pin for the version you actually want to keep running.
 | GET    | `/health`            | health check                                 |
 
 Auth: `Authorization: Bearer <access_token>`.
+
+> No OpenAPI spec is shipped yet — the table above plus the acceptance
+> guides are the reference.

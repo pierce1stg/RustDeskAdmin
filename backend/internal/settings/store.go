@@ -58,6 +58,43 @@ const (
 	MaxAccessTokenTTLMin       = 10080 // 7 days in minutes
 	MinRefreshTokenTTLDays     = 1
 	MaxRefreshTokenTTLDays     = 365
+
+	// Web client connection defaults. The admin panel edits these; they are
+	// returned by GET /settings and applied as the initial quality/fps/codec
+	// of every browser-based session (the user can still override per session).
+	WebClientQualityKey     = "web_client_quality"
+	WebClientFPSKey         = "web_client_fps"
+	WebClientCodecKey       = "web_client_codec"
+	DefaultWebClientQuality = 3
+	DefaultWebClientFPS     = 30
+	DefaultWebClientCodec   = "auto"
+	MinWebClientFPS         = 1
+	MaxWebClientFPS         = 240
+
+	// Session-chat system messages. Each has an enable flag so the greeting
+	// and the close notice toggle independently; empty text sends nothing.
+	WebClientChatGreetingKey        = "web_client_chat_greeting"
+	WebClientChatGreetingEnabledKey = "web_client_chat_greeting_enabled"
+	WebClientChatCloseKey           = "web_client_chat_close"
+	WebClientChatCloseEnabledKey    = "web_client_chat_close_enabled"
+	DefaultWebClientChatGreeting    = "Hello! How can I help you?"
+	DefaultWebClientChatClose       = "The operator has closed the chat."
+	MaxWebClientChatText            = 2000 // runes, matches the wire cap
+
+	// More web-client session defaults (admin panel edits these; the
+	// browser applies them once per session unless the user overrides).
+	WebClientRenderScaleKey     = "web_client_render_scale"
+	WebClientCursorKey          = "web_client_cursor"
+	WebClientInputModeKey       = "web_client_input_mode"
+	DefaultWebClientRenderScale = "auto"
+	DefaultWebClientCursor      = "false"
+	DefaultWebClientInputMode   = "auto"
+
+	// Display name this panel's web client announces to hosts
+	// (LoginRequest.my_name; the host shows it in its session dialog).
+	WebClientNameKey      = "web_client_name"
+	DefaultWebClientName  = "Web Browser"
+	MaxWebClientNameRunes = 64
 )
 
 type Store struct {
@@ -107,7 +144,7 @@ func (s *Store) EnsureDefaults(ctx context.Context) error {
 
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO settings (key, value)
-		VALUES ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14), ($15, $16), ($17, $18), ($19, $20), ($21, $22), ($23, $24), ($25, $26)
+		VALUES ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10), ($11, $12), ($13, $14), ($15, $16), ($17, $18), ($19, $20), ($21, $22), ($23, $24), ($25, $26), ($27, $28), ($29, $30), ($31, $32), ($33, $34), ($35, $36), ($37, $38), ($39, $40), ($41, $42), ($43, $44), ($45, $46), ($47, $48)
 		ON CONFLICT (key) DO NOTHING
 	`,
 		AdminUsernameKey, adminUser,
@@ -123,6 +160,17 @@ func (s *Store) EnsureDefaults(ctx context.Context) error {
 		ServerPublicKeyKey, os.Getenv("RUSTDESK_PUBLIC_KEY"),
 		AccessTokenTTLKey, envOr("ACCESS_TOKEN_TTL_MINUTES", strconv.Itoa(DefaultAccessTokenTTLMin)),
 		RefreshTokenTTLKey, envOr("REFRESH_TOKEN_TTL_DAYS", strconv.Itoa(DefaultRefreshTokenTTLDays)),
+		WebClientQualityKey, envOr("WEB_CLIENT_QUALITY", strconv.Itoa(DefaultWebClientQuality)),
+		WebClientFPSKey, envOr("WEB_CLIENT_FPS", strconv.Itoa(DefaultWebClientFPS)),
+		WebClientCodecKey, envOr("WEB_CLIENT_CODEC", DefaultWebClientCodec),
+		WebClientChatGreetingKey, envOr("WEB_CLIENT_CHAT_GREETING", DefaultWebClientChatGreeting),
+		WebClientChatGreetingEnabledKey, envOr("WEB_CLIENT_CHAT_GREETING_ENABLED", "true"),
+		WebClientChatCloseKey, envOr("WEB_CLIENT_CHAT_CLOSE", DefaultWebClientChatClose),
+		WebClientChatCloseEnabledKey, envOr("WEB_CLIENT_CHAT_CLOSE_ENABLED", "true"),
+		WebClientRenderScaleKey, envOr("WEB_CLIENT_RENDER_SCALE", DefaultWebClientRenderScale),
+		WebClientCursorKey, envOr("WEB_CLIENT_CURSOR", DefaultWebClientCursor),
+		WebClientInputModeKey, envOr("WEB_CLIENT_INPUT_MODE", DefaultWebClientInputMode),
+		WebClientNameKey, envOr("WEB_CLIENT_NAME", DefaultWebClientName),
 	); err != nil {
 		return err
 	}
@@ -201,6 +249,163 @@ func clampInterval(sec int) int {
 		return MaxRefreshInterval
 	}
 	return sec
+}
+
+// WebClientQuality returns the default web-client ImageQuality enum value
+// (0 = Auto, 2 = Low, 3 = Balanced, 4 = Best), sanitized.
+func (s *Store) WebClientQuality(ctx context.Context) int {
+	raw, err := s.Get(ctx, WebClientQualityKey, strconv.Itoa(DefaultWebClientQuality))
+	if err != nil {
+		return DefaultWebClientQuality
+	}
+	q, err := strconv.Atoi(raw)
+	if err != nil {
+		return DefaultWebClientQuality
+	}
+	if q == 0 || q == 2 || q == 3 || q == 4 {
+		return q
+	}
+	return DefaultWebClientQuality
+}
+
+// WebClientFPS returns the default web-client frame rate, clamped.
+func (s *Store) WebClientFPS(ctx context.Context) int {
+	raw, err := s.Get(ctx, WebClientFPSKey, strconv.Itoa(DefaultWebClientFPS))
+	if err != nil {
+		return DefaultWebClientFPS
+	}
+	fps, err := strconv.Atoi(raw)
+	if err != nil {
+		return DefaultWebClientFPS
+	}
+	return clampInt(fps, MinWebClientFPS, MaxWebClientFPS)
+}
+
+// WebClientCodec returns the default web-client codec preference ("auto" or a
+// named codec), sanitized.
+func (s *Store) WebClientCodec(ctx context.Context) string {
+	raw, err := s.Get(ctx, WebClientCodecKey, DefaultWebClientCodec)
+	if err != nil || !ValidWebClientCodec(raw) {
+		return DefaultWebClientCodec
+	}
+	return raw
+}
+
+// ValidWebClientCodec reports whether v is an accepted codec preference.
+func ValidWebClientCodec(v string) bool {
+	switch v {
+	case "auto", "vp8", "vp9", "av1":
+		return true
+	}
+	return false
+}
+
+// ValidWebClientChatEnabled reports whether v is an accepted on/off flag.
+func ValidWebClientChatEnabled(v string) bool {
+	return v == "true" || v == "false"
+}
+
+// ValidWebClientChatText reports whether v fits the wire cap (runes, so
+// Cyrillic counts as characters, not bytes).
+func ValidWebClientChatText(v string) bool {
+	return len([]rune(v)) <= MaxWebClientChatText
+}
+
+// WebClientChatGreeting returns the auto-greeting text (may be empty, which
+// sends nothing).
+func (s *Store) WebClientChatGreeting(ctx context.Context) string {
+	raw, err := s.Get(ctx, WebClientChatGreetingKey, DefaultWebClientChatGreeting)
+	if err != nil || !ValidWebClientChatText(raw) {
+		return DefaultWebClientChatGreeting
+	}
+	return raw
+}
+
+// WebClientChatGreetingEnabled reports whether the auto-greeting sends.
+func (s *Store) WebClientChatGreetingEnabled(ctx context.Context) bool {
+	raw, err := s.Get(ctx, WebClientChatGreetingEnabledKey, "true")
+	if err != nil || !ValidWebClientChatEnabled(raw) {
+		return true
+	}
+	return raw == "true"
+}
+
+// WebClientChatClose returns the close-notice text (may be empty).
+func (s *Store) WebClientChatClose(ctx context.Context) string {
+	raw, err := s.Get(ctx, WebClientChatCloseKey, DefaultWebClientChatClose)
+	if err != nil || !ValidWebClientChatText(raw) {
+		return DefaultWebClientChatClose
+	}
+	return raw
+}
+
+// WebClientChatCloseEnabled reports whether the close notice sends.
+func (s *Store) WebClientChatCloseEnabled(ctx context.Context) bool {
+	raw, err := s.Get(ctx, WebClientChatCloseEnabledKey, "true")
+	if err != nil || !ValidWebClientChatEnabled(raw) {
+		return true
+	}
+	return raw == "true"
+}
+
+// ValidWebClientRenderScale reports whether v is an accepted render-scale cap.
+func ValidWebClientRenderScale(v string) bool {
+	switch v {
+	case "auto", "original", "144p", "240p", "360p", "480p", "720p", "1080p", "1440p":
+		return true
+	}
+	return false
+}
+
+// ValidWebClientInputMode reports whether v is an accepted input-mode default.
+func ValidWebClientInputMode(v string) bool {
+	switch v {
+	case "auto", "touch", "pointer":
+		return true
+	}
+	return false
+}
+
+// WebClientRenderScale returns the default render-scale cap, sanitized.
+func (s *Store) WebClientRenderScale(ctx context.Context) string {
+	raw, err := s.Get(ctx, WebClientRenderScaleKey, DefaultWebClientRenderScale)
+	if err != nil || !ValidWebClientRenderScale(raw) {
+		return DefaultWebClientRenderScale
+	}
+	return raw
+}
+
+// WebClientCursor reports whether the remote-cursor overlay defaults on.
+func (s *Store) WebClientCursor(ctx context.Context) bool {
+	raw, err := s.Get(ctx, WebClientCursorKey, DefaultWebClientCursor)
+	if err != nil || !ValidWebClientChatEnabled(raw) {
+		return false
+	}
+	return raw == "true"
+}
+
+// WebClientInputMode returns the default input mode ("auto" = device detect).
+func (s *Store) WebClientInputMode(ctx context.Context) string {
+	raw, err := s.Get(ctx, WebClientInputModeKey, DefaultWebClientInputMode)
+	if err != nil || !ValidWebClientInputMode(raw) {
+		return DefaultWebClientInputMode
+	}
+	return raw
+}
+
+// ValidWebClientName reports whether v fits the host dialog (1-64 runes).
+func ValidWebClientName(v string) bool {
+	n := len([]rune(v))
+	return n >= 1 && n <= MaxWebClientNameRunes
+}
+
+// WebClientName returns the display name announced to hosts, sanitized.
+func (s *Store) WebClientName(ctx context.Context) string {
+	raw, err := s.Get(ctx, WebClientNameKey, DefaultWebClientName)
+	if err != nil || !ValidWebClientName(raw) {
+		return DefaultWebClientName
+	}
+	return raw
 }
 
 func envOr(key, def string) string {

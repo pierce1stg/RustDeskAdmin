@@ -170,6 +170,12 @@ func (s *Service) ChangeCredentials(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "new password must be at least 8 characters"})
 		return
 	}
+	// bcrypt silently truncates past 72 bytes; reject instead of creating a
+	// password whose tail is ignored.
+	if len(newPassword) > 72 {
+		c.JSON(400, gin.H{"error": "new password must be at most 72 characters"})
+		return
+	}
 
 	if newPassword != "" {
 		hashed, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
@@ -207,27 +213,27 @@ func (s *Service) Refresh(c *gin.Context) {
 		return
 	}
 
+	// Share the login bucket per IP so refresh cannot be brute-forced
+	// offline either; normal clients refresh rarely and never hit this.
+	if !s.loginLimits.allow("refresh|" + c.ClientIP()) {
+		c.JSON(429, gin.H{"error": "too many refresh attempts, try again later"})
+		return
+	}
+
 	claims, err := s.parseToken(req.RefreshToken, s.jwtRefreshSecret)
 	if err != nil {
 		c.JSON(401, gin.H{"error": "invalid refresh token"})
 		return
 	}
 
-	// A valid-but-unknown jti means the presented token was already rotated or
-	// the server has no record of it. Reject that single token: the admin is
-	// signed out once, without nuking every other active session.
-	ok, err := s.sessions.isValid(c.Request.Context(), claims.ID)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "failed to check session"})
-		return
-	}
-	if !ok {
-		c.JSON(401, gin.H{"error": "invalid refresh token"})
-		return
-	}
-
-	// Rotate: the presented refresh token is now single-use.
-	if err := s.sessions.revoke(c.Request.Context(), claims.ID); err != nil {
+	// Atomically validate AND rotate: the presented refresh token is
+	// single-use. Concurrent use of the same token (or a reused one) fails
+	// here instead of issuing a second credential pair.
+	if err := s.sessions.consume(c.Request.Context(), claims.ID); err != nil {
+		if errors.Is(err, errInvalidSession) {
+			c.JSON(401, gin.H{"error": "invalid refresh token"})
+			return
+		}
 		c.JSON(500, gin.H{"error": "failed to rotate token"})
 		return
 	}
@@ -254,6 +260,30 @@ func (s *Service) Refresh(c *gin.Context) {
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 	})
+}
+
+// Logout revokes a single refresh-token session. It is idempotent: unknown
+// or already-rotated tokens still return success so logout never fails
+// after a concurrent refresh.
+func (s *Service) Logout(c *gin.Context) {
+	var req struct {
+		RefreshToken string `json:"refresh_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	claims, err := s.parseToken(req.RefreshToken, s.jwtRefreshSecret)
+	if err != nil {
+		c.JSON(200, gin.H{"message": "signed out"})
+		return
+	}
+	if err := s.sessions.revoke(c.Request.Context(), claims.ID); err != nil {
+		c.JSON(500, gin.H{"error": "failed to sign out"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "signed out"})
 }
 
 func (s *Service) AuthMiddleware() gin.HandlerFunc {

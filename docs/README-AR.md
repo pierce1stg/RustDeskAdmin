@@ -1,4 +1,4 @@
-# RustDesk Admin
+# RustDesk Admin — v1.0.0
 
 <p align="center">
   [<a href="../README.md">English</a>] | [<a href="README-RU.md">Русский</a>] | [<a href="README-ZH.md">中文</a>]<br>
@@ -17,12 +17,12 @@
 إعادة تشغيل `./setup.sh` لا تُفقد أي بيانات أو إعدادات.
 
 ```
-rustdesk-stack/
+RustDeskAdmin/
 ├── docker-compose.yml         # 8 خدمات على شبكة واحدة
 ├── docker-compose.dev.yml     # توسعة اختيارية: air hot-reload + خادم vite
 ├── setup.sh                   # تهيئة أول تشغيل (idempotent)
 ├── .env.example               # قالب؛ انسخه إلى .env
-├── Makefile                   # أوامر مساعدة (dev/build/logs/db ...)
+├── Makefile                   # أوامر مساعدة (dev/build/logs/shell/test …)
 ├── backend/                   # واجهة Go API للإدارة (صورة prod صغيرة)
 ├── frontend/                  # واجهة React للإدارة (nginx ثابت / SPA)
 ├── nginx/nginx.conf.template  # ${DOMAIN} + ACME webroot + إنهاء WSS
@@ -31,7 +31,8 @@ rustdesk-stack/
 ├── data/                      # البيانات الحية - يُنشئها setup.sh:
 │   ├── hbbs/                  #   مفتاح hbbs/hbbr (id_ed25519) + قاعدة أجهزة sqlite
 │   ├── postgres/              #   دليل بيانات Postgres (bind mount)
-│   └── certbot/etc/           #   live/archive/renewal لـ Let's Encrypt
+│   ├── screenshots/           #   مرفوعات صفحة التحميل (SCREENSHOTS_DIR)
+│   └── certbot/etc/           #   live/archive/renewal لـ Let's Encrypt (+ www/)
 └── status/                    # presence.json (يكتبه حاوية presence)
 ```
 
@@ -55,6 +56,8 @@ rustdesk-stack/
 - [الشهادات (Let's Encrypt)](#الشهاداتlets-encrypt)
 - [معلومات الخادم](#معلومات-الخادم)
 - [عميل RustDesk للويب](#عميل-rustdesk-للويب)
+- [التحكم عن بُعد من المتصفح](#التحكم-عن-بُعد-من-المتصفح)
+- [صفحة التحميل العامة](#صفحة-التحميل-العامة)
 - [رمز إعداد العميل](#رمز-إعداد-العميل)
 - [وضع التطوير (dev overlay)](#وضع-التطويرdev-overlay)
 - [مصادر التحميل والمرايا (Block C)](#مصادر-التحميل-والمرايا-block-c)
@@ -70,8 +73,12 @@ rustdesk-stack/
 
 - **لوحة إدارة الويب** (React SPA + Go API):
   - لوحة المعلومات — ملخص حالة الخادم، الحضور الحي.
-  - الأجهزة — قائمة الأجهزة المسجلة (`GET /api/devices`)، عرض التفاصيل، الحذف.
-  - الإعدادات — إعدادات اللوحة (مأخوذة من `.env` ثم تملكها قاعدة البيانات); عمر الجلسة قابل للضبط هنا كذلك.
+  - الأجهزة — قائمة الأجهزة المسجلة (`GET /api/devices`)، أعمدة PeerInfo
+    (المضيف/المستخدم/النظام/الإصدار/الشاشات)، بحث، تثبيت/اسم مستعار، كلمات
+    مرور محفوظة مشفّرة، عرض التفاصيل، الحذف.
+  - الإعدادات — أقسام قابلة للطي (الحالة تُحفظ في المتصفح)، إعدادات اللوحة
+    (مأخوذة من `.env` ثم تملكها قاعدة البيانات)؛ القيم الافتراضية لعميل الويب
+    ورسائل النظام للدردشة واسم العرض تُضبط هنا.
   - تسجيل الدخول = JWT access + refresh مع جلسات مخزّنة على الخادم؛ تُدار الجلسات وتُنظَّف عند انتهاء رمز refresh؛ وتغيير بيانات admin.
 - **الحضور الحي** (حاوية `presence`):
   - يقرأ اتصالات hbbs/hbbr الحقيقية مباشرةً من نطاقاتها (فضاءاتها) في الشبكة
@@ -166,10 +173,12 @@ nginx. إذا ظهر تحذير **«placeholder cert»** عند أول تشغي�
 POSTGRES_PASSWORD=$(openssl rand -base64 32)
 JWT_SECRET=$(openssl rand -base64 32)
 JWT_REFRESH_SECRET=$(openssl rand -base64 32)
+DEVICE_SECRET=$(openssl rand -base64 32)
 ```
 
 ...وضع القيم في `.env`. يمكنك أيضًا إبقاء `changeme` — فالسكربت سيستبدلها بقيم
-عشوائية عند أول تشغيل.
+عشوائية عند أول تشغيل. يفشل `setup.sh` إذا كان `DOMAIN` فارغًا أو بقي العنصر
+النائب `app.example.com` — ضع اسم host حقيقيًا.
 
 سينفّذ `setup.sh` (idempotent):
 
@@ -216,6 +225,22 @@ JWT_REFRESH_SECRET=$(openssl rand -base64 32)
 (true، يفعّل بطاقة Server updates في اللوحة) و`ALLOW_PANEL_UPDATE`
 (true، يفعّل بطاقة Panel update في اللوحة — الفحص والتحديث فقط بضغطة زر؛ لا يوجد تحديث ذاتي تلقائي).
 
+### القيم الافتراضية لعميل الويب (بذور لمرة واحدة، ثم: الإعدادات ← عميل الويب)
+
+| المتغير | الافتراضي | المسموح | المعنى |
+|---|---|---|---|
+| `WEB_CLIENT_QUALITY` | 3 | 0 (تلقائي)، 2، 3، 4 | جودة الصورة الابتدائية |
+| `WEB_CLIENT_FPS` | 30 | 1..240 | معدل الإطارات الابتدائي |
+| `WEB_CLIENT_CODEC` | auto | auto، vp8، vp9، av1 | تفضيل الترميز الابتدائي |
+| `WEB_CLIENT_RENDER_SCALE` | auto | auto، original، 144p..1440p | سقف التفاصيل |
+| `WEB_CLIENT_CURSOR` | false | true/false | تراكب مؤشر المضيف |
+| `WEB_CLIENT_INPUT_MODE` | auto | auto، touch، pointer | وضع الإدخال (`auto` = حسب الجهاز) |
+| `WEB_CLIENT_NAME` | Web Browser | 1..64 حرفًا | الاسم الذي تراه المضيفات |
+| `WEB_CLIENT_CHAT_GREETING` | Hello! How can I help you? | ≤2000 حرف، فارغ = صمت | ترحيب تلقائي عند أول فتح للدردشة |
+| `WEB_CLIENT_CHAT_GREETING_ENABLED` | true | true/false | مفتاح الترحيب |
+| `WEB_CLIENT_CHAT_CLOSE` | The operator has closed the chat. | ≤2000 حرف، فارغ = صمت | إشعار إغلاق الدردشة |
+| `WEB_CLIENT_CHAT_CLOSE_ENABLED` | true | true/false | مفتاح الإشعار |
+
 ### عمر الجلسة (JWT TTL)
 
 رمز access يحرس كل استدعاء API؛ رمز refresh يُبقي جلسة المتصفح حيّة ويُدار مرة واحدة
@@ -242,7 +267,7 @@ JWT_REFRESH_SECRET=$(openssl rand -base64 32)
 | `RELAY_PORT`     | 21117     | ترحيل hbbr (tcp+udp)                           |
 | `WSS_ID_PORT`    | 21118     | WSS → hbbs (إنهاء TLS عبر nginx)               |
 | `WSS_RELAY_PORT` | 21119     | WSS → hbbr (إنهاء TLS عبر nginx)               |
-| `API_PORT`       | 8080      | منفذ الخلفية يعرض على المضيف (للتشخيص)          |
+| `API_PORT`       | 8080      | منفذ الخلفية، loopback فقط (`127.0.0.1`، التشخيص عبر ssh) |
 
 منافذ الاستماع داخل الحاويات ثابتة؛ فقط تعيين مضيف المنفذ قابل للمعاملات.
 مثال: إن شغّل خادم آخر منفذ المضيف 443، فعيّن `HTTPS_PORT=8443`.
@@ -285,6 +310,35 @@ JWT_REFRESH_SECRET=$(openssl rand -base64 32)
 للاتصال عبر عميل الويب (https://rustdesk.com/web)، أشر إلى Server Info في اللوحة
 عند `DOMAIN` والمنافذ، واستخدم المفتاح من اللوحة. ترويسات CORS في nginx تسمح بأصول
 `rustdesk.com`/`web.rustdesk.com`.
+
+---
+
+## التحكم عن بُعد من المتصفح
+
+تدير اللوحة نفسها جلسات بعيدة في المتصفح (`control/:id`) — لا حاجة لعميل سطح مكتب:
+
+- **الترميزات**: فك VP8 / VP9 / AV1 برمجيًا فقط (WebCodecs)؛ ترميزات العتاد مُستبعدة
+  عمدًا. الوضع التلقائي يبدأ بالمُجرَّب (`last-good` وإلا VP9)؛ الاختيار اليدوي حرفي،
+  مع مهلة قبل إعلان عدم امتثال المضيف وشريط “عودة للتلقائي”.
+- **سلّم الجودة التلقائي** مع قاع عميق (حتى 1/10 عند تكدّس الطابور)، إعداد Turbo
+  (Low/60/الأرخص + استعادة بنقرة)، سقوف render-scale.
+- **سجل الجلسة v2**: مستويات وفئات وبحث بتمييز وبوابة تسجيل وعلامات انقطاع
+  وطيّ بعدّاد وتدقيق `ui:` كامل.
+- **دردشة الجلسة**: نافذة عائمة + فقاعة قابلة للإرساء (المواضع تُحفظ)، شارة غير
+  المقروء، منتقي إيموجي، ترحيب/إشعار إغلاق قابلان للضبط، اسم عرض العميل، وسجل
+  للجلسة فقط. نص فقط — لا نقل ملفات ولا إغلاق عن بُعد في البروتوكول.
+- حافظة بالاتجاهين واختصارات وتبديل شاشات وتكبير ولوحة لمس وتراكب مؤشر المضيف.
+
+مصفوفة القبول ومرجع سطور السجل: `acceptance-AR.md` (RU/EN/ZH بجواره)، والقائمة
+البشرية: `manual-checklist.md`.
+
+---
+
+## صفحة التحميل العامة
+
+تقدّم اللوحة صفحة عامة لتحميل العملاء (`/download` تُضبط من `/download-config`):
+نصوص لكل لغة وأقسام منصات بأزرار تحميل ورفع لقطات (تُخزَّن في `SCREENSHOTS_DIR`
+أي `./data/screenshots` افتراضيًا — لا تخلطها مع `docs/screenshots/` فتلك صور هذا الملف).
 
 ---
 
@@ -399,7 +453,7 @@ APK_MIRROR=https://mirror.example.com/alpine
 ```
 # المضيف القديم
 docker compose stop postgres
-mkdir -p ~/rustdesk-migrate && cp -a rustdesk-stack/data ~/rustdesk-migrate/data
+mkdir -p ~/rustdesk-migrate && cp -a RustDeskAdmin/data ~/rustdesk-migrate/data
 tar czf ~/rustdesk-migrate/data.tgz -C ~/rustdesk-migrate data
 
 # المضيف الجديد
@@ -497,6 +551,10 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 | GET     | `/api/devices`              | قائمة الأجهزة (مقسمة صفحات)                    |
 | PATCH   | `/api/devices/:id`          | تحديث جهاز (alias، pinned)                     |
 | DELETE  | `/api/devices/:id`          | حذف جهاز                                       |
+| GET     | `/api/devices/:id/password` | حالة كلمة المرور (لا تُعرض أبدًا)              |
+| PUT     | `/api/devices/:id/password` | حفظ كلمة مرور مشفّرة                           |
+| DELETE  | `/api/devices/:id/password` | حذف الكلمة المحفوظة                            |
+| PATCH   | `/api/devices/peer/:peerId/peerinfo` | لقطة PeerInfo (المضيف/الإصدار/الشاشات) |
 | GET     | `/api/status`               | حالة hbbs/hbbr الحية + الحضور                  |
 | GET     | `/api/devices/stream`       | SSE: تحديثات حية لحالة online/offline          |
 | GET     | `/api/settings`             | الإعدادات                                      |
@@ -508,3 +566,5 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 | GET     | `/health`                   | فحص الصحة                                      |
 
 المصادقة: ترويسة `Authorization: Bearer <access_token>`.
+
+> لا تُشحن مواصفة OpenAPI مع v1.0.0 — الجدول أعلاه وأدلة القبول هي المرجع.

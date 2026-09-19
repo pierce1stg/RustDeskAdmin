@@ -10,4 +10,4 @@ RUN if [ -n "$APK_MIRROR" ]; then sed -i "s|https://dl-cdn.alpinelinux.org/alpin
 COPY scripts/presence.sh /usr/local/bin/presence.sh
 RUN chmod +x /usr/local/bin/presence.sh
 
-ENTRYPOINT ["/bin/sh", "-c", "while true; do presence.sh; sleep 15; done"]
+ENTRYPOINT ["/bin/sh", "-c", "while true; do presence.sh; sleep \"${PRESENCE_INTERVAL:-15}\"; done"]

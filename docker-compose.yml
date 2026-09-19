@@ -60,19 +60,34 @@ services:
       DATABASE_URL: postgres://rustdesk:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/rustdesk_admin?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required in .env}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required in .env}
+      DEVICE_SECRET: ${DEVICE_SECRET:-}
       HBB_DB_PATH: /data/db_v2.sqlite3
       HBB_PRESENCE_PATH: /var/run/rustdesk/presence.json
       SERVER_PORT: 8080
       GIN_MODE: release
       DOMAIN: ${DOMAIN:?DOMAIN is required}
       SERVER_DISPLAY_ADDRESS: ${SERVER_DISPLAY_ADDRESS:-}
+      RELAY_ADDRESS: ${RELAY_ADDRESS:-}
+      RUSTDESK_API_SERVER: ${RUSTDESK_API_SERVER:-}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
       STATUS_REFRESH_INTERVAL: ${STATUS_REFRESH_INTERVAL:-30}
+      STATUS_REFRESH_MODE: ${STATUS_REFRESH_MODE:-push}
       RUSTDESK_ID_PORT: ${RUSTDESK_ID_PORT:-21116}
       RUSTDESK_RELAY_PORT: ${RUSTDESK_RELAY_PORT:-21117}
       RUSTDESK_WS_PORT: ${RUSTDESK_WS_PORT:-21118}
       RUSTDESK_PUBLIC_KEY: ${RUSTDESK_PUBLIC_KEY:-}
+      WEB_CLIENT_QUALITY: ${WEB_CLIENT_QUALITY:-3}
+      WEB_CLIENT_FPS: ${WEB_CLIENT_FPS:-30}
+      WEB_CLIENT_CODEC: ${WEB_CLIENT_CODEC:-auto}
+      WEB_CLIENT_RENDER_SCALE: ${WEB_CLIENT_RENDER_SCALE:-auto}
+      WEB_CLIENT_CURSOR: ${WEB_CLIENT_CURSOR:-false}
+      WEB_CLIENT_INPUT_MODE: ${WEB_CLIENT_INPUT_MODE:-auto}
+      WEB_CLIENT_NAME: ${WEB_CLIENT_NAME:-Web Browser}
+      WEB_CLIENT_CHAT_GREETING: ${WEB_CLIENT_CHAT_GREETING:-}
+      WEB_CLIENT_CHAT_GREETING_ENABLED: ${WEB_CLIENT_CHAT_GREETING_ENABLED:-true}
+      WEB_CLIENT_CHAT_CLOSE: ${WEB_CLIENT_CHAT_CLOSE:-}
+      WEB_CLIENT_CHAT_CLOSE_ENABLED: ${WEB_CLIENT_CHAT_CLOSE_ENABLED:-true}
       ALLOW_SERVER_UPDATE: ${ALLOW_SERVER_UPDATE:-true}
       ALLOW_PANEL_UPDATE: ${ALLOW_PANEL_UPDATE:-true}
       SCREENSHOTS_DIR: ${SCREENSHOTS_DIR:-/screenshots}
@@ -84,7 +99,16 @@ services:
       - ./status:/var/run/rustdesk:ro
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "${API_PORT:-8080}:8080"
+      # Loopback-only: the panel goes through nginx:443. Publishing the API
+      # on all interfaces would bypass nginx rate-limits and CORS and expose
+      # trusted-proxy headers to spoofing. Debug via ssh + localhost.
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -148,7 +172,7 @@ services:
       - ./scripts/presence.sh:/usr/local/bin/presence.sh:ro
     environment:
       PRESENCE_OUT_DIR: /status
-    command: /bin/sh -c "while true; do presence.sh; sleep 10; done"
+      PRESENCE_INTERVAL: "10"
 
   certbot:
     image: ${DOCKER_REGISTRY_PREFIX:-}certbot/certbot

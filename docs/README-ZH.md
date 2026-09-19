@@ -1,4 +1,4 @@
-# RustDesk Admin
+# RustDesk Admin — v1.0.0
 
 <p align="center">
   [<a href="../README.md">English</a>] | [<a href="README-RU.md">Русский</a>] | [<a href="README-AR.md">العربية</a>]<br>
@@ -15,12 +15,12 @@ ID 服务器 + 中继服务器 + 管理面板 + 设备在线状态（live presen
 `./setup.sh` 都不会丢失数据和设置。
 
 ```
-rustdesk-stack/
+RustDeskAdmin/
 ├── docker-compose.yml         # 8 个服务，同一网络
 ├── docker-compose.dev.yml     # 可选覆盖：air 热重载 + vite 开发服务器
 ├── setup.sh                   # 首次启动引导（幂等）
 ├── .env.example               # 模板；复制为 .env
-├── Makefile                   # 常用命令（dev/build/logs/db ...）
+├── Makefile                   # 常用命令（dev/build/logs/shell/test …）
 ├── backend/                   # Go 管理 API（编译为小巧的生产镜像）
 ├── frontend/                  # React 管理界面（静态 nginx / SPA）
 ├── nginx/nginx.conf.template  # ${DOMAIN} + ACME webroot + WSS 终结
@@ -29,7 +29,8 @@ rustdesk-stack/
 ├── data/                      # 实时数据 —— 由 setup.sh 创建：
 │   ├── hbbs/                  #   hbbs/hbbr 密钥（id_ed25519）+ 设备数据库（sqlite）
 │   ├── postgres/              #   Postgres 数据目录（绑定挂载）
-│   └── certbot/etc/           #   Let's Encrypt live/archive/renewal
+│   ├── screenshots/           #   下载页上传（SCREENSHOTS_DIR）
+│   └── certbot/etc/           #   Let's Encrypt live/archive/renewal（+ www/）
 └── status/                    # presence.json（由 presence 容器写入）
 ```
 
@@ -53,6 +54,8 @@ rustdesk-stack/
 - [证书（Let's Encrypt）](#证书lets-encrypt)
 - [服务器信息（Server Info）](#服务器信息server-info)
 - [RustDesk Web 客户端](#rustdesk-web-客户端)
+- [浏览器远程控制](#浏览器远程控制)
+- [公开下载页](#公开下载页)
 - [客户端配置代码](#客户端配置代码)
 - [开发模式（dev overlay）](#开发模式dev-overlay)
 - [下载源与镜像（Block C）](#下载源与镜像block-c)
@@ -68,8 +71,8 @@ rustdesk-stack/
 
 - **Web 管理面板**（React SPA + Go API）：
   - 仪表盘 —— 服务器状态摘要、实时在线。
-  - 设备 —— 已注册设备列表（`GET /api/devices`）、查看详情、删除。
-  - 设置 —— 面板设置（初始从 `.env` 读取，之后以数据库为准）；会话时长也可在此配置。
+  - 设备 —— 已注册设备列表（`GET /api/devices`）、PeerInfo 列（主机/用户/系统/版本/显示器）、搜索、置顶/别名、加密保存的密码、查看详情、删除。
+  - 设置 —— 可折叠分区（状态按浏览器记忆）、面板设置（初始从 `.env` 读取，之后以数据库为准）；Web 客户端默认值、聊天系统消息和客户端显示名称均在此配置。
   - 登录 = JWT access + refresh 令牌，会话保存在服务端；会话随 refresh 令牌过期而轮换和清理；可修改管理员凭据。
 - **实时在线状态**（`presence` 容器）：
   - 直接从 hbbs/hbbr 的网络命名空间读取真实连接（nsenter + `ss` + docker.sock）；
@@ -159,9 +162,11 @@ Let's Encrypt HTTP-01 挑战由 nginx 通过它提供。如果首次运行出现
 POSTGRES_PASSWORD=$(openssl rand -base64 32)
 JWT_SECRET=$(openssl rand -base64 32)
 JWT_REFRESH_SECRET=$(openssl rand -base64 32)
+DEVICE_SECRET=$(openssl rand -base64 32)
 ```
 
 然后将值写入 `.env`。保留 `changeme` 也可以——脚本会在首次运行时替换为随机值。
+如果 `DOMAIN` 为空或仍是占位符 `app.example.com`，`setup.sh` 会直接报错退出——请先填真实域名。
 
 `setup.sh`（幂等）将：
 
@@ -207,6 +212,22 @@ hbbs 会在 `data/hbbs` 生成密钥）、`RUSTDESK_ID_PORT`、`RUSTDESK_RELAY_P
 （true，启用面板的 Server updates 卡片）、`ALLOW_PANEL_UPDATE`
 （true，启用面板自身的面板内更新——仅需点击按钮即可检查并手动更新；面板永远不会自动更新）。
 
+### Web 客户端默认值（一次性种子，之后：设置 → Web 客户端）
+
+| 变量 | 默认 | 允许 | 含义 |
+|---|---|---|---|
+| `WEB_CLIENT_QUALITY` | 3 | 0（自动）、2、3、4 | 初始画质 |
+| `WEB_CLIENT_FPS` | 30 | 1..240 | 初始帧率 |
+| `WEB_CLIENT_CODEC` | auto | auto、vp8、vp9、av1 | 初始编码偏好 |
+| `WEB_CLIENT_RENDER_SCALE` | auto | auto、original、144p..1440p | 画面细节上限 |
+| `WEB_CLIENT_CURSOR` | false | true/false | 远端光标悬浮层开关 |
+| `WEB_CLIENT_INPUT_MODE` | auto | auto、touch、pointer | 输入模式（auto = 按设备判断） |
+| `WEB_CLIENT_NAME` | Web Browser | 1..64 字符 | 主机看到的面板会话名称 |
+| `WEB_CLIENT_CHAT_GREETING` | Hello! How can I help you? | ≤2000 字符，空 = 不发 | 首次打开聊天的自动问候 |
+| `WEB_CLIENT_CHAT_GREETING_ENABLED` | true | true/false | 问候开关 |
+| `WEB_CLIENT_CHAT_CLOSE` | The operator has closed the chat. | ≤2000 字符，空 = 不发 | 关闭聊天通知 |
+| `WEB_CLIENT_CHAT_CLOSE_ENABLED` | true | true/false | 关闭通知开关 |
+
 ### 会话时长（JWT TTL）
 
 access 令牌为每次 API 调用把关；refresh 令牌维持浏览器会话并在每次刷新时轮换。
@@ -232,7 +253,7 @@ access 令牌为每次 API 调用把关；refresh 令牌维持浏览器会话并
 | `RELAY_PORT`     | 21117  | hbbr 中继（tcp+udp）                   |
 | `WSS_ID_PORT`    | 21118  | WSS → hbbs（nginx TLS 终结）           |
 | `WSS_RELAY_PORT` | 21119  | WSS → hbbr（nginx TLS 终结）           |
-| `API_PORT`       | 8080   | 后端暴露到宿主的端口（调试用）          |
+| `API_PORT`       | 8080   | 后端端口，仅回环（`127.0.0.1`，经 ssh 调试）          |
 
 容器内的监听端口固定不变；只有主机端口映射可参数化。例如：如果其它服务占用了
 宿主机 443 端口，可设置 `HTTPS_PORT=8443`。
@@ -274,6 +295,28 @@ access 令牌为每次 API 调用把关；refresh 令牌维持浏览器会话并
 要通过 Web 客户端（https://rustdesk.com/web）连接，请在面板的 Server Info 中
 填入你的 `DOMAIN` 和端口，并使用面板中的密钥。nginx 的 CORS 响应头允许
 `rustdesk.com`/`web.rustdesk.com` 来源。
+
+---
+
+## 浏览器远程控制
+
+面板本身可在浏览器中发起远程会话（`control/:id`）——无需桌面客户端：
+
+- **编码**：仅 VP8 / VP9 / AV1 软解（WebCodecs）；硬件编码有意不提供。自动模式 proven 优先（`last-good`，否则 VP9）；手动选择按字面执行，主机超 10 秒不服从即判违规并弹出“回到自动”横幅。
+- **自动画质阶梯**（含深底：队列卡住时可降至 1/10）、Turbo 预设（Low/60/最低成本 + 一键恢复）、render-scale 上限。
+- **会话日志 v2**：级别、分类、搜索高亮、按类落盘门控、断线标记、可折叠计数、完整 `ui:` 审计。
+- **会话聊天**：浮动窗口 + 可停靠气泡（位置记忆）、未读徽标、emoji 选择器、可配置的问候 / 关闭通知、客户端显示名称、仅本会话历史。纯文本——协议无文件传输、无远端关闭。
+- 双向剪贴板、快捷键、多显示器切换、缩放、触摸板、远端光标悬浮层。
+
+验收矩阵与日志行对照：`acceptance-ZH.md`（RU/EN/AR 同级），人工清单：`manual-checklist.md`。
+
+---
+
+## 公开下载页
+
+面板提供公开的客户端下载页（`/download`，在面板 `/download-config` 中配置）：
+按语言的文本、按平台的下载按钮、截图上传（存于 `SCREENSHOTS_DIR`，默认
+`./data/screenshots` —— 不要与本文档图片目录 `docs/screenshots/` 混淆）。
 
 ---
 
@@ -386,7 +429,7 @@ APK_MIRROR=https://mirror.example.com/alpine
 ```
 # 旧主机
 docker compose stop postgres
-mkdir -p ~/rustdesk-migrate && cp -a rustdesk-stack/data ~/rustdesk-migrate/data
+mkdir -p ~/rustdesk-migrate && cp -a RustDeskAdmin/data ~/rustdesk-migrate/data
 tar czf ~/rustdesk-migrate/data.tgz -C ~/rustdesk-migrate data
 
 # 新主机
@@ -478,6 +521,10 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 | GET    | `/api/devices`              | 设备列表（分页）                              |
 | PATCH  | `/api/devices/:id`          | 更新设备（alias、pinned）                     |
 | DELETE | `/api/devices/:id`          | 删除设备                                      |
+| GET    | `/api/devices/:id/password` | 已存密码状态（绝不返回密钥本身）              |
+| PUT    | `/api/devices/:id/password` | 保存加密的设备密码                            |
+| DELETE | `/api/devices/:id/password` | 删除已存密码                                  |
+| PATCH  | `/api/devices/peer/:peerId/peerinfo` | PeerInfo 快照（主机/版本/显示器）    |
 | GET    | `/api/status`               | 实时 hbbs/hbbr 状态 + 在线连接                |
 | GET    | `/api/devices/stream`       | SSE：在线/离线状态实时推送                    |
 | GET    | `/api/settings`             | 设置                                          |
@@ -489,3 +536,5 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 | GET    | `/health`                   | 健康检查                                      |
 
 认证：请求头 `Authorization: Bearer <access_token>`。
+
+> v1.0.0 不附带 OpenAPI 规范——以上表格与验收指南即参考。

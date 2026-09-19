@@ -11,8 +11,16 @@ export interface Device {
   deleted_at: string | null
   last_seen: string | null
   online: boolean
+  password_saved: boolean
   created_at: string
   updated_at: string
+  // Last-known PeerInfo snapshot (NULL until the first panel connect).
+  hostname: string | null
+  username: string | null
+  platform: string | null
+  host_version: string | null
+  displays: string | null // JSON: [{name,x,y,width,height}, ...]
+  peerinfo_updated_at: string | null
 }
 
 export interface ListDevicesParams {
@@ -78,6 +86,68 @@ export const useDeleteDevice = () => {
       queryClient.invalidateQueries({ queryKey: deviceKeys.all })
     },
   })
+}
+
+// ---------- saved passwords ----------
+
+export const useSaveDevicePassword = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ id, password }: { id: string; password: string }) => {
+      await api.put(`/devices/${id}/password`, { password })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: deviceKeys.all })
+    },
+  })
+}
+
+export const useDeleteDevicePassword = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/devices/${id}/password`)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: deviceKeys.all })
+    },
+  })
+}
+
+/** Fetch the saved password for a user-facing (decimal) peer id, or null. */
+export async function fetchSavedPeerPassword(peerId: string): Promise<string | null> {
+  try {
+    const { data } = await api.get<{ password: string }>(`/devices/peer/${encodeURIComponent(peerId)}/password`)
+    return data.password || null
+  } catch {
+    return null
+  }
+}
+
+/** Save (or replace) the remembered password for a peer id. */
+export async function savePeerPassword(peerId: string, password: string): Promise<boolean> {
+  try {
+    await api.put(`/devices/peer/${encodeURIComponent(peerId)}/password`, { password })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export type { PeerInfoDisplay, PeerInfoSnapshot } from '@/lib/rustdesk/peerinfo'
+import type { PeerInfoSnapshot } from '@/lib/rustdesk/peerinfo'
+export { formatDisplays, describeDisplays } from '@/lib/rustdesk/peerinfo'
+
+/** Store the last-known PeerInfo snapshot for a peer id. Best-effort. */
+export async function savePeerInfoSnapshot(peerId: string, snap: PeerInfoSnapshot): Promise<boolean> {
+  try {
+    await api.patch(`/devices/peer/${encodeURIComponent(peerId)}/peerinfo`, snap)
+    return true
+  } catch {
+    return false
+  }
 }
 
 export interface OnlineStatusSnapshot {

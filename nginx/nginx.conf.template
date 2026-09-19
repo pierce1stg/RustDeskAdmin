@@ -27,7 +27,8 @@ http {
     tcp_nodelay on;
     keepalive_timeout 65;
     types_hash_max_size 2048;
-    client_max_body_size 100M;
+    client_max_body_size 16M;
+    server_tokens off;
 
     gzip on;
     gzip_vary on;
@@ -163,13 +164,15 @@ http {
         location /ws/id {
             if ($request_method = OPTIONS) {
                 add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Vary Origin always;
                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-                add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+                add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
                 add_header Access-Control-Max-Age 86400;
                 access_log off;
                 return 204;
             }
             add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Vary Origin always;
             proxy_pass http://hbbs:21118/ws/;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
@@ -188,13 +191,15 @@ http {
         location /ws/relay {
             if ($request_method = OPTIONS) {
                 add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Vary Origin always;
                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-                add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+                add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
                 add_header Access-Control-Max-Age 86400;
                 access_log off;
                 return 204;
             }
             add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Vary Origin always;
             proxy_pass http://hbbr:21119/ws/;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
@@ -232,13 +237,15 @@ http {
         location / {
             if ($request_method = OPTIONS) {
                 add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Vary Origin always;
                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-                add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+                add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
                 add_header Access-Control-Max-Age 86400;
                 access_log off;
                 return 204;
             }
             add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Vary Origin always;
             proxy_pass http://hbbs:21118;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
@@ -270,13 +277,15 @@ http {
         location / {
             if ($request_method = OPTIONS) {
                 add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Vary Origin always;
                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-                add_header Access-Control-Allow-Headers $http_access_control_request_headers always;
+                add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
                 add_header Access-Control-Max-Age 86400;
                 access_log off;
                 return 204;
             }
             add_header Access-Control-Allow-Origin $web_client_origin always;
+                add_header Vary Origin always;
             proxy_pass http://hbbr:21119;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;

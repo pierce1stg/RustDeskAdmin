@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,6 +31,7 @@ type Config struct {
 	DatabaseURL        string
 	JWTSecret          string
 	JWTRefreshSecret   string
+	DeviceSecret       string
 	HBBDBPath          string
 	HBBPresencePath    string
 	ServerPort         string
@@ -42,7 +44,7 @@ type Config struct {
 func main() {
 	cfg := loadConfig()
 
-	logger, _ := zap.NewDevelopment()
+	logger, _ := zap.NewProduction()
 	defer logger.Sync()
 
 	// Refuse to boot with placeholder secrets so a missing env var can never
@@ -64,7 +66,11 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	rootCtx := context.Background()
+	// Sync goroutines (presence watcher, online transitions) live for the whole
+	// process; they are cancelled before the HTTP server shuts down so no DB
+	// writes race with pool.Close().
+	syncCtx, syncCancel := context.WithCancel(context.Background())
+	defer syncCancel()
 
 	settingsStore := settings.NewStore(pool)
 
@@ -74,7 +80,26 @@ func main() {
 	}
 
 	authService := auth.NewService(cfg.JWTSecret, cfg.JWTRefreshSecret, pool, settingsStore)
-	deviceService := device.NewService(pool, cfg.HBBDBPath, cfg.HBBPresencePath, settingsStore, logger)
+	// DEVICE_SECRET is the dedicated at-rest encryption key for saved device
+	// passwords. Empty keeps the legacy behavior (JWT secret) so existing
+	// rows stay readable; the JWT value is passed as decrypt fallback.
+	deviceSecret := cfg.DeviceSecret
+	if deviceSecret == "" {
+		deviceSecret = cfg.JWTSecret
+	}
+	deviceService := device.NewService(pool, cfg.HBBDBPath, cfg.HBBPresencePath, deviceSecret, settingsStore, logger, cfg.JWTSecret)
+
+	// Apply the device-password schema once at bootstrap instead of lazily on
+	// request hot paths (a read-only DB role would fail every GET otherwise).
+	if err := deviceService.EnsurePasswordSchema(ctx); err != nil {
+		logger.Fatal("Failed to ensure device password schema", zap.Error(err))
+	}
+	// Same for the PeerInfo snapshot columns (migration 005 covers fresh
+	// installs; this covers already-seeded volumes).
+	if err := deviceService.EnsurePeerInfoSchema(ctx); err != nil {
+		logger.Fatal("Failed to ensure device peerinfo schema", zap.Error(err))
+	}
+
 	updater := update.NewUpdater(cfg.HBBPresencePath, cfg.AllowServerUpdates, logger)
 	panelUpdater := update.NewPanelUpdater(cfg.HBBPresencePath, cfg.AllowPanelUpdates, logger)
 
@@ -82,13 +107,20 @@ func main() {
 		logger.Warn("Failed to create screenshots directory", zap.Error(err))
 	}
 
-	go deviceService.StartSync(rootCtx)
+	go deviceService.StartSync(syncCtx)
 
-	router := setupRouter(cfg, authService, deviceService, settingsStore, updater, panelUpdater)
+	router := setupRouter(cfg, authService, deviceService, settingsStore, updater, panelUpdater, func(ctx context.Context) error {
+		return pool.Ping(ctx)
+	})
 
 	srv := &http.Server{
-		Addr:    ":" + cfg.ServerPort,
-		Handler: router,
+		Addr:              ":" + cfg.ServerPort,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// WriteTimeout is intentionally not set: the /devices/stream SSE
+		// endpoint holds an open response for the whole session.
 	}
 
 	go func() {
@@ -103,6 +135,10 @@ func main() {
 	<-quit
 	logger.Info("Shutting down server...")
 
+	// Stop background sync before draining HTTP so in-flight handlers never
+	// touch a closed pool.
+	syncCancel()
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -116,6 +152,7 @@ func loadConfig() Config {
 		DatabaseURL:        getEnv("DATABASE_URL", "postgres://rustdesk:changeme@localhost:5432/rustdesk_admin?sslmode=disable"),
 		JWTSecret:          getEnv("JWT_SECRET", "dev-secret-change-in-production"),
 		JWTRefreshSecret:   getEnv("JWT_REFRESH_SECRET", "dev-refresh-secret-change-in-production"),
+		DeviceSecret:       getEnv("DEVICE_SECRET", ""),
 		HBBDBPath:          getEnv("HBB_DB_PATH", "/data/rustdesk/db_v2.sqlite3"),
 		HBBPresencePath:    getEnv("HBB_PRESENCE_PATH", "/var/run/presence.json"),
 		ServerPort:         getEnv("SERVER_PORT", "8080"),
@@ -131,6 +168,15 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// limitRequestBody caps every request body so a public (non-proxied) port
+// cannot be abused to stream unbounded payloads into ShouldBindJSON parsers.
+func limitRequestBody(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Next()
+	}
 }
 
 var serverInfoSettingKeys = map[string]string{
@@ -178,12 +224,33 @@ func validHostname(v string) bool {
 		}
 		return true
 	}
-	for _, r := range v {
-		if !(r >= 'a' && r <= 'z' ||
-			r >= 'A' && r <= 'Z' ||
-			r >= '0' && r <= '9' ||
-			r == '.' || r == '-' || r == '_') {
+	// Plain IP without brackets.
+	if net.ParseIP(v) != nil {
+		return true
+	}
+	if strings.HasPrefix(v, "-") || strings.HasPrefix(v, ".") || strings.HasPrefix(v, "_") {
+		return false
+	}
+	if strings.HasSuffix(v, "-") || strings.HasSuffix(v, ".") {
+		return false
+	}
+	if strings.Contains(v, "..") {
+		return false
+	}
+	for _, label := range strings.Split(v, ".") {
+		if len(label) == 0 || len(label) > 63 {
 			return false
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' ||
+				r >= 'A' && r <= 'Z' ||
+				r >= '0' && r <= '9' ||
+				r == '-' || r == '_') {
+				return false
+			}
 		}
 	}
 	return true
@@ -194,13 +261,37 @@ func validServerPublicKey(v string) bool {
 	return err == nil && len(decoded) == 32
 }
 
-func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Service, settingsStore *settings.Store, updater *update.Updater, panelUpdater *update.PanelUpdater) *gin.Engine {
+// validAPIServer accepts a full http(s) URL with a host and no userinfo.
+func validAPIServer(v string) bool {
+	if strings.ContainsAny(v, " \t\r\n") {
+		return false
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Host == "" || u.User != nil {
+		return false
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
+}
+
+func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Service, settingsStore *settings.Store, updater *update.Updater, panelUpdater *update.PanelUpdater, healthCheck func(ctx context.Context) error) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
+	r.Use(limitRequestBody(16 << 20)) // 16 MiB cap (screenshot uploads are <= 10 MiB)
+	// Trust only private-range proxies (docker networks, nginx) for
+	// X-Forwarded-For. Direct public clients have their XFF ignored, so
+	// ClientIP() falls back to the real peer address and the login
+	// rate-limiter cannot be bypassed by header spoofing.
+	_ = r.SetTrustedProxies([]string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"})
 
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
+		if healthCheck != nil {
+			if err := healthCheck(c.Request.Context()); err != nil {
+				c.JSON(503, gin.H{"status": "degraded"})
+				return
+			}
+		}
+		c.JSON(200, gin.H{"status": "ok", "db": "ok"})
 	})
 
 	api := r.Group("/api")
@@ -209,6 +300,7 @@ func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Se
 		{
 			authGroup.POST("/login", authService.Login)
 			authGroup.POST("/refresh", authService.Refresh)
+			authGroup.POST("/logout", authService.Logout)
 		}
 
 		// Public endpoints used by the anonymous download page.
@@ -249,6 +341,12 @@ func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Se
 				devices.GET("/stream", deviceService.StreamDevices)
 				devices.PATCH("/:id", deviceService.UpdateDevice)
 				devices.DELETE("/:id", deviceService.DeleteDevice)
+				devices.GET("/:id/password", deviceService.GetDevicePassword)
+				devices.PUT("/:id/password", deviceService.SaveDevicePassword)
+				devices.DELETE("/:id/password", deviceService.DeleteDevicePassword)
+				devices.GET("/peer/:peerId/password", deviceService.GetPeerPassword)
+				devices.PUT("/peer/:peerId/password", deviceService.SavePeerPassword)
+				devices.PATCH("/peer/:peerId/peerinfo", deviceService.UpdatePeerInfo)
 			}
 
 			status := protected.Group("/status")
@@ -280,10 +378,21 @@ func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Se
 			{
 				settingGroup.GET("", func(c *gin.Context) {
 					c.JSON(200, gin.H{
-						settings.RefreshIntervalKey:   settingsStore.GetRefreshInterval(c.Request.Context()),
-						settings.StatusRefreshModeKey: settingsStore.GetStatusRefreshMode(c.Request.Context()),
-						settings.AccessTokenTTLKey:    settingsStore.AccessTokenTTLMinutes(c.Request.Context()),
-						settings.RefreshTokenTTLKey:   settingsStore.RefreshTokenTTLDays(c.Request.Context()),
+						settings.RefreshIntervalKey:              settingsStore.GetRefreshInterval(c.Request.Context()),
+						settings.StatusRefreshModeKey:            settingsStore.GetStatusRefreshMode(c.Request.Context()),
+						settings.AccessTokenTTLKey:               settingsStore.AccessTokenTTLMinutes(c.Request.Context()),
+						settings.RefreshTokenTTLKey:              settingsStore.RefreshTokenTTLDays(c.Request.Context()),
+						settings.WebClientQualityKey:             settingsStore.WebClientQuality(c.Request.Context()),
+						settings.WebClientFPSKey:                 settingsStore.WebClientFPS(c.Request.Context()),
+						settings.WebClientCodecKey:               settingsStore.WebClientCodec(c.Request.Context()),
+						settings.WebClientChatGreetingKey:        settingsStore.WebClientChatGreeting(c.Request.Context()),
+						settings.WebClientChatGreetingEnabledKey: settingsStore.WebClientChatGreetingEnabled(c.Request.Context()),
+						settings.WebClientChatCloseKey:           settingsStore.WebClientChatClose(c.Request.Context()),
+						settings.WebClientChatCloseEnabledKey:    settingsStore.WebClientChatCloseEnabled(c.Request.Context()),
+						settings.WebClientRenderScaleKey:         settingsStore.WebClientRenderScale(c.Request.Context()),
+						settings.WebClientCursorKey:              settingsStore.WebClientCursor(c.Request.Context()),
+						settings.WebClientInputModeKey:           settingsStore.WebClientInputMode(c.Request.Context()),
+						settings.WebClientNameKey:                settingsStore.WebClientName(c.Request.Context()),
 					})
 				})
 				settingGroup.PUT("/:key", func(c *gin.Context) {
@@ -393,6 +502,198 @@ func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Se
 						return
 					}
 
+					if key == settings.WebClientQualityKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						q, err := strconv.Atoi(req.Value)
+						if err != nil || (q != 0 && q != 2 && q != 3 && q != 4) {
+							c.JSON(400, gin.H{"error": "value must be 0 (auto), 2, 3 or 4"})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), settings.WebClientQualityKey, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						c.JSON(200, gin.H{
+							settings.WebClientQualityKey: settingsStore.WebClientQuality(c.Request.Context()),
+						})
+						return
+					}
+
+					if key == settings.WebClientFPSKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						fps, err := strconv.Atoi(req.Value)
+						if err != nil || fps < settings.MinWebClientFPS || fps > settings.MaxWebClientFPS {
+							c.JSON(400, gin.H{"error": fmt.Sprintf("value must be between %d and %d", settings.MinWebClientFPS, settings.MaxWebClientFPS)})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), settings.WebClientFPSKey, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						c.JSON(200, gin.H{
+							settings.WebClientFPSKey: settingsStore.WebClientFPS(c.Request.Context()),
+						})
+						return
+					}
+
+					if key == settings.WebClientCodecKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						if !settings.ValidWebClientCodec(req.Value) {
+							c.JSON(400, gin.H{"error": "value must be auto, vp8, vp9 or av1"})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), settings.WebClientCodecKey, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						c.JSON(200, gin.H{
+							settings.WebClientCodecKey: settingsStore.WebClientCodec(c.Request.Context()),
+						})
+						return
+					}
+
+					if key == settings.WebClientChatGreetingEnabledKey || key == settings.WebClientChatCloseEnabledKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						if !settings.ValidWebClientChatEnabled(req.Value) {
+							c.JSON(400, gin.H{"error": "value must be true or false"})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), key, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						c.JSON(200, gin.H{key: req.Value == "true"})
+						return
+					}
+
+					if key == settings.WebClientChatGreetingKey || key == settings.WebClientChatCloseKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						if !settings.ValidWebClientChatText(req.Value) {
+							c.JSON(400, gin.H{"error": "value must be at most 2000 characters"})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), key, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						if key == settings.WebClientChatGreetingKey {
+							c.JSON(200, gin.H{key: settingsStore.WebClientChatGreeting(c.Request.Context())})
+						} else {
+							c.JSON(200, gin.H{key: settingsStore.WebClientChatClose(c.Request.Context())})
+						}
+						return
+					}
+
+					if key == settings.WebClientRenderScaleKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						if !settings.ValidWebClientRenderScale(req.Value) {
+							c.JSON(400, gin.H{"error": "value must be auto, original, 144p, 240p, 360p, 480p, 720p, 1080p or 1440p"})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), key, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						c.JSON(200, gin.H{key: settingsStore.WebClientRenderScale(c.Request.Context())})
+						return
+					}
+
+					if key == settings.WebClientCursorKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						if !settings.ValidWebClientChatEnabled(req.Value) {
+							c.JSON(400, gin.H{"error": "value must be true or false"})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), key, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						c.JSON(200, gin.H{key: settingsStore.WebClientCursor(c.Request.Context())})
+						return
+					}
+
+					if key == settings.WebClientInputModeKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						if !settings.ValidWebClientInputMode(req.Value) {
+							c.JSON(400, gin.H{"error": "value must be auto, touch or pointer"})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), key, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						c.JSON(200, gin.H{key: settingsStore.WebClientInputMode(c.Request.Context())})
+						return
+					}
+
+					if key == settings.WebClientNameKey {
+						var req struct {
+							Value string `json:"value"`
+						}
+						if err := c.ShouldBindJSON(&req); err != nil {
+							c.JSON(400, gin.H{"error": "invalid request body"})
+							return
+						}
+						if !settings.ValidWebClientName(req.Value) {
+							c.JSON(400, gin.H{"error": "value must be 1-64 characters"})
+							return
+						}
+						if err := settingsStore.Set(c.Request.Context(), key, req.Value); err != nil {
+							c.JSON(500, gin.H{"error": "failed to save setting"})
+							return
+						}
+						c.JSON(200, gin.H{key: settingsStore.WebClientName(c.Request.Context())})
+						return
+					}
+
 					c.JSON(400, gin.H{"error": "unknown setting"})
 				})
 			}
@@ -439,8 +740,8 @@ func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Se
 						}
 					}
 					if key == "api_server" {
-						if value != "" && !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
-							c.JSON(400, gin.H{"error": "api server must be a full URL starting with http:// or https://"})
+						if value != "" && !validAPIServer(value) {
+							c.JSON(400, gin.H{"error": "api server must be a valid http(s) URL without spaces or userinfo"})
 							return
 						}
 					}
@@ -500,6 +801,12 @@ func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Se
 					}
 					if int64(len(data)) > settings.MaxScreenshotSize {
 						c.JSON(400, gin.H{"error": "file too large (max 10 MiB)"})
+						return
+					}
+					// Reject polyglot uploads: extension alone does not prove
+					// the payload is an image served back to other visitors.
+					if ct := http.DetectContentType(data); !strings.HasPrefix(ct, "image/") {
+						c.JSON(400, gin.H{"error": "file is not an image"})
 						return
 					}
 					name, err := settings.ScreenshotStorageName(filepath.Ext(header.Filename))

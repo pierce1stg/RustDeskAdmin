@@ -288,7 +288,7 @@ export function DownloadConfigPage() {
     .sort((a, b) => (cfg.platforms[a]?.order ?? 0) - (cfg.platforms[b]?.order ?? 0))
 
   return (
-    <div className="w-full min-w-0 space-y-6">
+    <div className="w-full min-w-0 max-w-6xl space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-muted-foreground">{t('downloadConfig.desc')}</p>
         <div className="flex flex-wrap items-center gap-2">
@@ -359,7 +359,7 @@ export function DownloadConfigPage() {
           </div>
           <p className="text-muted-foreground">{t('downloadConfig.textsDesc')}</p>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-5">
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="dp-title">
               {t('downloadConfig.pageTitle')}
@@ -390,7 +390,7 @@ export function DownloadConfigPage() {
             </label>
             <textarea
               id="dp-intro"
-              className="neu-field min-h-24 w-full px-3 py-2 text-sm"
+              className="neu-field min-h-24 w-full max-w-2xl resize-y px-3 py-2 text-sm"
               placeholder={t('download.intro')}
               value={langValue(cfg.intro) || ''}
               onChange={(e) => updateLangString('intro', e.target.value)}
@@ -425,7 +425,7 @@ export function DownloadConfigPage() {
           </div>
           <p className="text-muted-foreground">{t('downloadConfig.platformsDesc')}</p>
         </CardHeader>
-        <CardContent className="space-y-6">
+        <CardContent className="space-y-5">
           {platformOrderedKeys.map((key) => {
             const Icon = PLATFORM_ICONS[key]
             const platform = cfg.platforms[key] || { enabled: true, instructions: emptyTexts(), buttons: {} }
@@ -476,7 +476,7 @@ export function DownloadConfigPage() {
                   </label>
                   <textarea
                     id={`dp-instr-${key}`}
-                    className="neu-field min-h-20 w-full px-3 py-2 text-sm"
+                    className="neu-field min-h-20 w-full max-w-2xl resize-y px-3 py-2 text-sm"
                     value={langValue(platform.instructions) || ''}
                     onChange={(e) =>
                       setPlatform(key, {
@@ -560,7 +560,7 @@ export function DownloadConfigPage() {
           </div>
           <p className="text-muted-foreground">{t('downloadConfig.instructionsDesc')}</p>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-5">
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="dp-instructions-title">
               {t('downloadConfig.instructionsSectionTitle')}
@@ -591,7 +591,7 @@ export function DownloadConfigPage() {
                         type="button"
                         onClick={() => setExpandedId(expanded ? null : instruction.id)}
                         title={expanded ? t('downloadConfig.collapse') : t('downloadConfig.expand')}
-                        className="flex min-w-0 flex-1 items-center gap-2 text-start"
+                        className="raw-focus flex min-w-0 flex-1 select-none items-center gap-2 text-start"
                       >
                         <ChevronDown
                           className={cn(
@@ -660,7 +660,7 @@ export function DownloadConfigPage() {
           </div>
           <p className="text-muted-foreground">{t('downloadConfig.libraryDesc')}</p>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-5">
           {cfg.screenshots.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('downloadConfig.noScreenshots')}</p>
           ) : (
@@ -768,7 +768,7 @@ function InstructionEditor({
           </label>
           <select
             id={`ins-target-${instruction.id}`}
-            className="neu-field h-10 w-full px-3 py-2 text-sm"
+            className="neu-field h-10 w-full max-w-xs px-3 py-2 text-sm"
             value={instruction.target || ''}
             onChange={(e) => onChange({ ...instruction, target: e.target.value })}
           >
@@ -787,7 +787,7 @@ function InstructionEditor({
             <button
               type="button"
               className={cn(
-                'h-9 rounded-md border px-3 text-xs font-medium transition-shadow',
+                'raw-focus h-9 rounded-md border px-3 text-xs font-medium transition-shadow',
                 instruction.color === '' ? 'ring-2 ring-ring ring-offset-1' : 'text-muted-foreground',
               )}
               onClick={() => onChange({ ...instruction, color: '' })}
@@ -801,7 +801,7 @@ function InstructionEditor({
                 aria-label={t(`downloadConfig.color_${c.key}`)}
                 title={t(`downloadConfig.color_${c.key}`)}
                 className={cn(
-                  'h-9 w-9 rounded-md border transition-transform hover:scale-105',
+                  'raw-focus h-9 w-9 rounded-md border transition-transform hover:scale-105',
                   instruction.color === c.key && 'ring-2 ring-ring ring-offset-2',
                 )}
                 style={{ backgroundColor: c.swatch }}
@@ -917,7 +917,7 @@ function InstructionEditor({
 
           <textarea
             aria-label={t('downloadConfig.stepText')}
-            className="neu-field min-h-20 w-full px-3 py-2 text-sm"
+            className="neu-field min-h-20 w-full max-w-2xl resize-y px-3 py-2 text-sm"
             placeholder={t('downloadConfig.stepTextPh')}
             value={step.text || ''}
             onChange={(e) =>
@@ -1149,7 +1149,7 @@ function ThemePhotoField({
             <button
               type="button"
               aria-label={t('downloadConfig.delete')}
-              className="absolute end-1 top-1 rounded bg-black/60 p-0.5 text-white hover:bg-black/80"
+              className="raw-focus absolute end-1 top-1 rounded bg-black/60 p-0.5 text-white hover:bg-black/80"
               onClick={() => onRemove(k)}
             >
               <X className="h-3 w-3" />
@@ -1160,7 +1160,7 @@ function ThemePhotoField({
           <button
             type="button"
             className={cn(
-              'flex h-20 w-full max-w-[16rem] flex-col items-center justify-center gap-1 rounded-md border border-dashed p-2 text-xs text-muted-foreground transition-colors sm:w-auto sm:min-w-[10rem]',
+              'raw-focus flex h-20 w-full max-w-[16rem] flex-col items-center justify-center gap-1 rounded-md border border-dashed p-2 text-xs text-muted-foreground transition-colors sm:w-auto sm:min-w-[10rem]',
               dragging ? 'border-primary bg-muted/40 text-primary' : 'hover:bg-muted/40',
             )}
             onClick={() => fileInputRef.current?.click()}

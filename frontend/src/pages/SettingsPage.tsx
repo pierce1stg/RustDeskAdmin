@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
-import { Server, Network, RefreshCw, ShieldCheck, Languages, Download, Check, Clock, Rocket } from 'lucide-react'
+import { Server, RefreshCw, ShieldCheck, Languages, Download, Check, Clock, Rocket, MonitorSmartphone, MessageCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import {
   useSettings,
   useUpdateSetting,
@@ -28,6 +28,33 @@ import {
   DEFAULT_REFRESH_TOKEN_TTL,
   MIN_REFRESH_TOKEN_TTL,
   MAX_REFRESH_TOKEN_TTL,
+  WEB_CLIENT_QUALITY_KEY,
+  DEFAULT_WEB_CLIENT_QUALITY,
+  WEB_CLIENT_FPS_KEY,
+  DEFAULT_WEB_CLIENT_FPS,
+  MIN_WEB_CLIENT_FPS,
+  MAX_WEB_CLIENT_FPS,
+  WEB_CLIENT_CODEC_KEY,
+  DEFAULT_WEB_CLIENT_CODEC,
+  WEB_CLIENT_CODECS,
+  WEB_CLIENT_RENDER_SCALE_KEY,
+  DEFAULT_WEB_CLIENT_RENDER_SCALE,
+  WEB_CLIENT_RENDER_SCALES,
+  WEB_CLIENT_CURSOR_KEY,
+  DEFAULT_WEB_CLIENT_CURSOR,
+  WEB_CLIENT_INPUT_MODE_KEY,
+  DEFAULT_WEB_CLIENT_INPUT_MODE,
+  WEB_CLIENT_INPUT_MODES,
+  WEB_CLIENT_NAME_KEY,
+  DEFAULT_WEB_CLIENT_NAME,
+  MAX_WEB_CLIENT_NAME,
+  WEB_CLIENT_CHAT_GREETING_KEY,
+  DEFAULT_WEB_CLIENT_CHAT_GREETING,
+  WEB_CLIENT_CHAT_GREETING_ENABLED_KEY,
+  WEB_CLIENT_CHAT_CLOSE_KEY,
+  DEFAULT_WEB_CLIENT_CHAT_CLOSE,
+  WEB_CLIENT_CHAT_CLOSE_ENABLED_KEY,
+  MAX_WEB_CLIENT_CHAT_TEXT,
 } from '@/api/settings'
 import { useChangeCredentials } from '@/api/auth'
 import { apiErrorText } from '@/api/client'
@@ -42,6 +69,61 @@ import {
 } from '@/api/panel'
 import { SUPPORTED_LANGS, LANGUAGE_LABELS, changeAppLanguage } from '@/i18n'
 import i18n from '@/i18n'
+import { loadOpenIds, saveOpenIds, toggleOpenId } from '@/lib/settingsCollapse'
+
+// Settings section card with a clickable header: collapsed shows only the
+// title + description. State persists per browser (expanded by default).
+function CollapsibleCard({
+  id,
+  icon,
+  title,
+  desc,
+  children,
+}: {
+  id: string
+  icon: React.ReactNode
+  title: string
+  desc: string
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(() => loadOpenIds().includes(id))
+  const toggle = () => {
+    setOpen((v) => {
+      const next = !v
+      saveOpenIds(toggleOpenId(loadOpenIds(), id, next))
+      return next
+    })
+  }
+  return (
+    <Card>
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            toggle()
+          }
+        }}
+        className="raw-focus cursor-pointer select-none"
+      >
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            {icon}
+            <CardTitle>{title}</CardTitle>
+            <span className="ms-auto text-muted-foreground">
+              {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </span>
+          </div>
+          <p className="text-muted-foreground">{desc}</p>
+        </CardHeader>
+      </div>
+      {open && children}
+    </Card>
+  )
+}
 
 function SourceBadge({ source }: { source: string }) {
   const { t } = useTranslation()
@@ -179,7 +261,7 @@ function ServerUpdatesCard() {
     const info = compInfo(comp)
     return (
       <Dialog open={confirmComp === comp} onOpenChange={(open) => !open && setConfirmComp(null)}>
-        <DialogContent>
+        <DialogContent className="w-[calc(100vw-2rem)] sm:w-fit sm:max-w-[calc(100vw-2rem)]">
           <DialogHeader>
             <DialogTitle>{t('settings.updateConfirmTitle', { component: componentLabel(comp) })}</DialogTitle>
             <DialogDescription>
@@ -189,12 +271,13 @@ function ServerUpdatesCard() {
               })}
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmComp(null)} disabled={apply.isPending}>
+          <DialogFooter className="flex-col-reverse items-stretch gap-2 sm:space-x-0 sm:flex-row sm:justify-end">
+            <Button variant="outline" className="w-full whitespace-normal sm:w-auto" onClick={() => setConfirmComp(null)} disabled={apply.isPending}>
               {t('common.cancel')}
             </Button>
             <Button
               variant="destructive"
+              className="w-full whitespace-normal sm:w-auto"
               disabled={apply.isPending}
               onClick={async () => {
                 try {
@@ -221,15 +304,13 @@ function ServerUpdatesCard() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <Download className="h-5 w-5 text-primary" />
-          <CardTitle>{t('settings.updatesTitle')}</CardTitle>
-        </div>
-        <p className="text-muted-foreground">{t('settings.updatesDesc')}</p>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <CollapsibleCard
+      id="updates"
+      icon={<Download className="h-5 w-5 text-primary" />}
+      title={t('settings.updatesTitle')}
+      desc={t('settings.updatesDesc')}
+    >
+      <CardContent className="space-y-5">
         {(['hbbs', 'hbbr'] as UpdateComponent[]).map((comp) => {
           const info = compInfo(comp)
           const current =
@@ -282,7 +363,7 @@ function ServerUpdatesCard() {
               </>
             )}
           </Button>
-          {isError && <span className="text-xs text-red-600">{t('settings.checkFailed')}</span>}
+          {isError && <span className="text-xs text-red-600 dark:text-red-400">{t('settings.checkFailed')}</span>}
           {check && !isError && (
             <span className="text-xs text-muted-foreground">
               {t('settings.checkResults', {
@@ -294,7 +375,7 @@ function ServerUpdatesCard() {
         </div>
       </CardContent>
       {confirmComp && confirm(confirmComp)}
-    </Card>
+    </CollapsibleCard>
   )
 }
 
@@ -345,15 +426,13 @@ function PanelUpdatesCard() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <Rocket className="h-5 w-5 text-primary" />
-          <CardTitle>{t('settings.panelUpdatesTitle')}</CardTitle>
-        </div>
-        <p className="text-muted-foreground">{t('settings.panelUpdatesDesc')}</p>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <CollapsibleCard
+      id="panel-updates"
+      icon={<Rocket className="h-5 w-5 text-primary" />}
+      title={t('settings.panelUpdatesTitle')}
+      desc={t('settings.panelUpdatesDesc')}
+    >
+      <CardContent className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-3">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="text-sm font-medium">{t('settings.panelVersion')}</span>
@@ -390,7 +469,7 @@ function PanelUpdatesCard() {
         )}
 
         {(phase === 'rolled_back' || phase === 'error') && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-200 px-4 py-3 text-sm text-red-600">
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-200 px-4 py-3 text-sm text-red-600 dark:border-red-900 dark:text-red-400">
             {phaseLabel(phase)}
             {status?.error && <span className="font-mono text-xs">{status.error}</span>}
           </div>
@@ -412,7 +491,7 @@ function PanelUpdatesCard() {
               </>
             )}
           </Button>
-          {isError && <span className="text-xs text-red-600">{t('settings.panelCheckFailed')}</span>}
+          {isError && <span className="text-xs text-red-600 dark:text-red-400">{t('settings.panelCheckFailed')}</span>}
           {check && !isError && (
             <span className="text-xs text-muted-foreground">
               {t('settings.checkResults', {
@@ -425,7 +504,7 @@ function PanelUpdatesCard() {
       </CardContent>
 
       <Dialog open={confirm} onOpenChange={(open) => !open && setConfirm(false)}>
-        <DialogContent>
+        <DialogContent className="w-[calc(100vw-2rem)] sm:w-fit sm:max-w-[calc(100vw-2rem)]">
           <DialogHeader>
             <DialogTitle>{t('settings.panelUpdateConfirmTitle', { latest: check?.latest })}</DialogTitle>
             <DialogDescription>
@@ -435,12 +514,13 @@ function PanelUpdatesCard() {
               })}
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirm(false)} disabled={apply.isPending}>
+          <DialogFooter className="flex-col-reverse items-stretch gap-2 sm:space-x-0 sm:flex-row sm:justify-end">
+            <Button variant="outline" className="w-full whitespace-normal sm:w-auto" onClick={() => setConfirm(false)} disabled={apply.isPending}>
               {t('common.cancel')}
             </Button>
             <Button
               variant="destructive"
+              className="w-full whitespace-normal sm:w-auto"
               disabled={apply.isPending}
               onClick={async () => {
                 try {
@@ -462,7 +542,7 @@ function PanelUpdatesCard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </CollapsibleCard>
   )
 }
 
@@ -483,6 +563,21 @@ export function SettingsPage() {
   const [updateMode, setUpdateMode] = useState<string>(DEFAULT_STATUS_UPDATE_MODE)
   const [accessTtl, setAccessTtl] = useState<string>('')
   const [refreshTtl, setRefreshTtl] = useState<string>('')
+  const [webQuality, setWebQuality] = useState<string>(String(DEFAULT_WEB_CLIENT_QUALITY))
+  const [webFps, setWebFps] = useState<string>(String(DEFAULT_WEB_CLIENT_FPS))
+  const [webCodec, setWebCodec] = useState<string>(DEFAULT_WEB_CLIENT_CODEC)
+  const [webRenderScale, setWebRenderScale] = useState<string>(DEFAULT_WEB_CLIENT_RENDER_SCALE)
+  const [webCursor, setWebCursor] = useState<boolean>(DEFAULT_WEB_CLIENT_CURSOR)
+  const [webInputMode, setWebInputMode] = useState<string>(DEFAULT_WEB_CLIENT_INPUT_MODE)
+  const [clientName, setClientName] = useState<string>('')
+  const clientNameHydratedRef = useRef(false)
+  const [chatGreeting, setChatGreeting] = useState<string>('')
+  const [chatGreetingEnabled, setChatGreetingEnabled] = useState<boolean>(true)
+  const [chatClose, setChatClose] = useState<string>('')
+  const [chatCloseEnabled, setChatCloseEnabled] = useState<boolean>(true)
+  // Hydrate once: later refetches (e.g. after unrelated saves) must not wipe
+  // long texts mid-typing.
+  const chatHydratedRef = useRef(false)
   useEffect(() => {
     if (settings && refreshInterval === '') {
       setRefreshInterval(String(settings[STATUS_REFRESH_INTERVAL_KEY] ?? DEFAULT_STATUS_REFRESH_INTERVAL))
@@ -496,10 +591,40 @@ export function SettingsPage() {
     if (settings && refreshTtl === '') {
       setRefreshTtl(String(settings[REFRESH_TOKEN_TTL_KEY] ?? DEFAULT_REFRESH_TOKEN_TTL))
     }
+    if (settings) {
+      setWebQuality(String(settings[WEB_CLIENT_QUALITY_KEY] ?? DEFAULT_WEB_CLIENT_QUALITY))
+      setWebFps(String(settings[WEB_CLIENT_FPS_KEY] ?? DEFAULT_WEB_CLIENT_FPS))
+      // Stale hardware defaults (h264/h265, removed from the product) fall
+      // back to auto instead of rendering an unselectable value.
+      setWebCodec(
+        WEB_CLIENT_CODECS.includes(settings[WEB_CLIENT_CODEC_KEY] as (typeof WEB_CLIENT_CODECS)[number])
+          ? String(settings[WEB_CLIENT_CODEC_KEY])
+          : DEFAULT_WEB_CLIENT_CODEC,
+      )
+      const rs = settings[WEB_CLIENT_RENDER_SCALE_KEY]
+      if (typeof rs === 'string' && (WEB_CLIENT_RENDER_SCALES as readonly string[]).includes(rs)) {
+        setWebRenderScale(rs)
+      }
+      if (typeof settings[WEB_CLIENT_CURSOR_KEY] === 'boolean') {
+        setWebCursor(settings[WEB_CLIENT_CURSOR_KEY] as boolean)
+      }
+      const im = settings[WEB_CLIENT_INPUT_MODE_KEY]
+      if (typeof im === 'string' && (WEB_CLIENT_INPUT_MODES as readonly string[]).includes(im)) {
+        setWebInputMode(im)
+      }
+    }
+    if (settings && !chatHydratedRef.current) {
+      chatHydratedRef.current = true
+      setChatGreeting(String(settings[WEB_CLIENT_CHAT_GREETING_KEY] ?? DEFAULT_WEB_CLIENT_CHAT_GREETING))
+      setChatGreetingEnabled(settings[WEB_CLIENT_CHAT_GREETING_ENABLED_KEY] ?? true)
+      setChatClose(String(settings[WEB_CLIENT_CHAT_CLOSE_KEY] ?? DEFAULT_WEB_CLIENT_CHAT_CLOSE))
+      setChatCloseEnabled(settings[WEB_CLIENT_CHAT_CLOSE_ENABLED_KEY] ?? true)
+    }
+    if (settings && !clientNameHydratedRef.current) {
+      clientNameHydratedRef.current = true
+      setClientName(String(settings[WEB_CLIENT_NAME_KEY] ?? DEFAULT_WEB_CLIENT_NAME))
+    }
   }, [settings, refreshInterval, accessTtl, refreshTtl])
-
-  const address = serverInfo?.address?.value ?? ''
-  const relay = serverInfo?.relay_address?.value ?? address
 
   const handleIntervalSave = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -531,10 +656,18 @@ export function SettingsPage() {
     }
   }
 
-  const handleAccessTtlSave = async (e: React.FormEvent) => {
+  const handleSessionTtlSave = async (e: React.FormEvent) => {
     e.preventDefault()
-    const value = Number(accessTtl)
-    if (!Number.isInteger(value) || value < MIN_ACCESS_TOKEN_TTL || value > MAX_ACCESS_TOKEN_TTL) {
+    const access = Number(accessTtl)
+    const refresh = Number(refreshTtl)
+    if (
+      !Number.isInteger(access) ||
+      access < MIN_ACCESS_TOKEN_TTL ||
+      access > MAX_ACCESS_TOKEN_TTL ||
+      !Number.isInteger(refresh) ||
+      refresh < MIN_REFRESH_TOKEN_TTL ||
+      refresh > MAX_REFRESH_TOKEN_TTL
+    ) {
       toast({
         title: t('settings.invalidSessionTtl'),
         description: t('settings.invalidSessionTtlDesc', { min: MIN_ACCESS_TOKEN_TTL, max: MAX_ACCESS_TOKEN_TTL }),
@@ -543,29 +676,103 @@ export function SettingsPage() {
       return
     }
     try {
-      await updateSetting.mutateAsync({ key: ACCESS_TOKEN_TTL_KEY, value: String(value) })
-      toast({ title: t('settings.accessTtlSaved'), description: t('settings.accessTtlSavedDesc', { value }), variant: 'success' })
+      await updateSetting.mutateAsync({ key: ACCESS_TOKEN_TTL_KEY, value: String(access) })
+      await updateSetting.mutateAsync({ key: REFRESH_TOKEN_TTL_KEY, value: String(refresh) })
+      toast({
+        title: t('settings.sessionAllTtlSaved'),
+        description: t('settings.sessionAllTtlSavedDesc', { access, refresh }),
+        variant: 'success',
+      })
     } catch {
       toast({ title: t('settings.sessionSaveFailed'), variant: 'destructive' })
     }
   }
 
-  const handleRefreshTtlSave = async (e: React.FormEvent) => {
+  const handleWebDefaultsSave = async (e: React.FormEvent) => {
     e.preventDefault()
-    const value = Number(refreshTtl)
-    if (!Number.isInteger(value) || value < MIN_REFRESH_TOKEN_TTL || value > MAX_REFRESH_TOKEN_TTL) {
+    const quality = Number(webQuality)
+    if (quality !== 0 && quality !== 2 && quality !== 3 && quality !== 4) {
+      toast({ title: t('settings.invalidWebQuality'), variant: 'destructive' })
+      return
+    }
+    const fps = Number(webFps)
+    if (!Number.isInteger(fps) || fps < MIN_WEB_CLIENT_FPS || fps > MAX_WEB_CLIENT_FPS) {
       toast({
-        title: t('settings.invalidSessionTtl'),
-        description: t('settings.invalidSessionTtlDesc', { min: MIN_REFRESH_TOKEN_TTL, max: MAX_REFRESH_TOKEN_TTL }),
+        title: t('settings.invalidWebFps'),
+        description: t('settings.invalidWebFpsDesc', { min: MIN_WEB_CLIENT_FPS, max: MAX_WEB_CLIENT_FPS }),
         variant: 'destructive',
       })
       return
     }
+    if (!WEB_CLIENT_CODECS.includes(webCodec as typeof WEB_CLIENT_CODECS[number])) {
+      toast({ title: t('settings.invalidWebCodec'), variant: 'destructive' })
+      return
+    }
+    if (!(WEB_CLIENT_RENDER_SCALES as readonly string[]).includes(webRenderScale)) {
+      toast({ title: t('settings.invalidWebRenderScale'), variant: 'destructive' })
+      return
+    }
+    if (!(WEB_CLIENT_INPUT_MODES as readonly string[]).includes(webInputMode)) {
+      toast({ title: t('settings.invalidWebInputMode'), variant: 'destructive' })
+      return
+    }
     try {
-      await updateSetting.mutateAsync({ key: REFRESH_TOKEN_TTL_KEY, value: String(value) })
-      toast({ title: t('settings.refreshTtlSaved'), description: t('settings.refreshTtlSavedDesc', { value }), variant: 'success' })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_QUALITY_KEY, value: String(quality) })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_FPS_KEY, value: String(fps) })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_CODEC_KEY, value: webCodec })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_RENDER_SCALE_KEY, value: webRenderScale })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_CURSOR_KEY, value: String(webCursor) })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_INPUT_MODE_KEY, value: webInputMode })
+      toast({ title: t('settings.webDefaultsSaved'), variant: 'success' })
     } catch {
-      toast({ title: t('settings.sessionSaveFailed'), variant: 'destructive' })
+      toast({ title: t('settings.webDefaultsSaveFailed'), variant: 'destructive' })
+    }
+  }
+
+  // The codec select only updates local state; it is saved together with
+  // quality and FPS by the Save button below.
+  const handleWebCodecChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setWebCodec(e.target.value)
+  }
+
+  // Client display name (LoginRequest.my_name shown on hosts). Hydrated once
+  // so refetches never wipe typing; validated 1-64 chars like the backend.
+  const handleClientNameSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const v = clientName.trim()
+    if ([...v].length < 1 || [...v].length > MAX_WEB_CLIENT_NAME) {
+      toast({ title: t('settings.invalidClientName'), description: t('settings.invalidClientNameDesc', { max: MAX_WEB_CLIENT_NAME }), variant: 'destructive' })
+      return
+    }
+    try {
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_NAME_KEY, value: v })
+      setClientName(v)
+      toast({ title: t('settings.clientNameSaved'), variant: 'success' })
+    } catch {
+      toast({ title: t('settings.clientNameSaveFailed'), variant: 'destructive' })
+    }
+  }
+
+  // Session-chat system messages: greeting (first user-initiated open) and
+  // close notice (X button on a non-empty chat). Each toggles independently;
+  // empty text sends nothing.
+  const handleChatSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (
+      [...chatGreeting].length > MAX_WEB_CLIENT_CHAT_TEXT ||
+      [...chatClose].length > MAX_WEB_CLIENT_CHAT_TEXT
+    ) {
+      toast({ title: t('settings.invalidChatText'), description: t('settings.invalidChatTextDesc', { max: MAX_WEB_CLIENT_CHAT_TEXT }), variant: 'destructive' })
+      return
+    }
+    try {
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_CHAT_GREETING_ENABLED_KEY, value: String(chatGreetingEnabled) })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_CHAT_GREETING_KEY, value: chatGreeting })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_CHAT_CLOSE_ENABLED_KEY, value: String(chatCloseEnabled) })
+      await updateSetting.mutateAsync({ key: WEB_CLIENT_CHAT_CLOSE_KEY, value: chatClose })
+      toast({ title: t('settings.chatSaved'), variant: 'success' })
+    } catch {
+      toast({ title: t('settings.chatSaveFailed'), variant: 'destructive' })
     }
   }
 
@@ -615,7 +822,7 @@ export function SettingsPage() {
   const intervalSec = Number(refreshInterval) || DEFAULT_STATUS_REFRESH_INTERVAL
 
   return (
-    <div className="w-full min-w-0 space-y-6">
+    <div className="w-full min-w-0 max-w-6xl space-y-6">
       <div>
         <p className="text-muted-foreground">{t('settings.desc')}</p>
       </div>
@@ -647,17 +854,46 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Client display name: deliberately NOT collapsible (explicit spec) —
+          it sits right after language so a fresh panel shows it immediately. */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Server className="h-5 w-5 text-primary" />
-            <CardTitle>{t('settings.serverInfo')}</CardTitle>
+            <MonitorSmartphone className="h-5 w-5 text-primary" />
+            <CardTitle>{t('settings.clientNameTitle')}</CardTitle>
           </div>
-          <p className="text-muted-foreground">
-            {t('settings.serverInfoDesc')}
-          </p>
+          <p className="text-muted-foreground">{t('settings.clientNameDesc')}</p>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent>
+          <form onSubmit={handleClientNameSave} className="space-y-4">
+            <Label htmlFor="clientName">{t('settings.clientName')}</Label>
+            <Input
+              id="clientName"
+              type="text"
+              maxLength={MAX_WEB_CLIENT_NAME}
+              className="max-w-2xl"
+              value={clientName}
+              onChange={(e) => setClientName(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t('settings.clientNameHint', { max: MAX_WEB_CLIENT_NAME })}
+            </p>
+            <div>
+              <Button type="submit" disabled={updateSetting.isPending}>
+                {t('common.save')}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+
+      <CollapsibleCard
+        id="server-info"
+        icon={<Server className="h-5 w-5 text-primary" />}
+        title={t('settings.serverInfo')}
+        desc={t('settings.serverInfoDesc')}
+      >
+        <CardContent className="space-y-5">
           <ServerInfoRow
             label={t('settings.address')}
             fieldKey="address"
@@ -701,45 +937,22 @@ export function SettingsPage() {
             hint={t('settings.publicKeyHint')}
           />
         </CardContent>
-      </Card>
+      </CollapsibleCard>
 
       <ServerUpdatesCard />
 
       <PanelUpdatesCard />
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Network className="h-5 w-5 text-primary" />
-            <CardTitle>{t('settings.webClient')}</CardTitle>
-          </div>
-          <p className="text-muted-foreground">{t('settings.webClientDesc')}</p>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="rounded-lg bg-muted p-4 font-mono text-sm space-y-1 overflow-x-auto">
-            <p>{t('settings.webClientUrl')}</p>
-            <p>{t('settings.webClientId', { address: address || '—' })}</p>
-            <p>{t('settings.webClientRelayAddress', { relay: relay || '—' })}</p>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            {t('settings.webClientHint')}
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <RefreshCw className="h-5 w-5 text-primary" />
-            <CardTitle>{t('settings.refreshTitle')}</CardTitle>
-          </div>
-          <p className="text-muted-foreground">
-            {t('settings.refreshDesc')}
-          </p>
-        </CardHeader>
+      <CollapsibleCard
+        id="refresh"
+        icon={<RefreshCw className="h-5 w-5 text-primary" />}
+        title={t('settings.refreshTitle')}
+        desc={t('settings.refreshDesc')}
+      >
         <CardContent>
           <div className="space-y-5">
             <div className="space-y-2">
+              <Label htmlFor="updateMode">{t('settings.refreshTitle')}</Label>
               <select
                 id="updateMode"
                 className="neu-field h-10 w-full max-w-xs px-3 py-2 text-sm"
@@ -749,7 +962,7 @@ export function SettingsPage() {
                 <option value={STATUS_UPDATE_MODE_PUSH}>{t('settings.refreshModePush')}</option>
                 <option value={STATUS_UPDATE_MODE_POLL}>{t('settings.refreshModePoll')}</option>
               </select>
-              <p className="text-sm text-muted-foreground">{t('settings.refreshModeHint')}</p>
+              <p className="text-xs text-muted-foreground">{t('settings.refreshModeHint')}</p>
             </div>
             <form onSubmit={handleIntervalSave} className="space-y-4 border-t border-border pt-4">
               <div className="space-y-2">
@@ -757,13 +970,14 @@ export function SettingsPage() {
                 <Input
                   id="refreshInterval"
                   type="number"
+                  className="max-w-md"
                   min={MIN_STATUS_REFRESH_INTERVAL}
                   max={MAX_STATUS_REFRESH_INTERVAL}
                   step={1}
                   value={refreshInterval}
                   onChange={(e) => setRefreshInterval(e.target.value)}
                 />
-                <p className="text-sm text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   {t('settings.refreshHint', {
                     min: MIN_STATUS_REFRESH_INTERVAL,
                     max: MAX_STATUS_REFRESH_INTERVAL,
@@ -778,76 +992,230 @@ export function SettingsPage() {
             </form>
           </div>
         </CardContent>
-      </Card>
+      </CollapsibleCard>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Clock className="h-5 w-5 text-primary" />
-            <CardTitle>{t('settings.sessionTitle')}</CardTitle>
-          </div>
-          <p className="text-muted-foreground">
-            {t('settings.sessionDesc')}
-          </p>
-        </CardHeader>
+      <CollapsibleCard
+        id="session"
+        icon={<Clock className="h-5 w-5 text-primary" />}
+        title={t('settings.sessionTitle')}
+        desc={t('settings.sessionDesc')}
+      >
         <CardContent className="space-y-5">
-          <form onSubmit={handleAccessTtlSave} className="space-y-2">
+          <form onSubmit={handleSessionTtlSave} className="space-y-4">
             <Label htmlFor="accessTtl">{t('settings.accessTokenTtl')}</Label>
             <Input
               id="accessTtl"
               type="number"
+              className="max-w-md"
               min={MIN_ACCESS_TOKEN_TTL}
               max={MAX_ACCESS_TOKEN_TTL}
               step={1}
               value={accessTtl}
               onChange={(e) => setAccessTtl(e.target.value)}
             />
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               {t('settings.accessTtlHint', {
                 min: MIN_ACCESS_TOKEN_TTL,
                 max: MAX_ACCESS_TOKEN_TTL,
                 default: DEFAULT_ACCESS_TOKEN_TTL,
               })}
             </p>
-            <Button type="submit" disabled={updateSetting.isPending}>
-              {t('common.save')}
-            </Button>
-          </form>
-          <form onSubmit={handleRefreshTtlSave} className="space-y-2 border-t border-border pt-4">
-            <Label htmlFor="refreshTtl">{t('settings.refreshTokenTtl')}</Label>
-            <Input
-              id="refreshTtl"
-              type="number"
-              min={MIN_REFRESH_TOKEN_TTL}
-              max={MAX_REFRESH_TOKEN_TTL}
-              step={1}
-              value={refreshTtl}
-              onChange={(e) => setRefreshTtl(e.target.value)}
-            />
-            <p className="text-sm text-muted-foreground">
-              {t('settings.refreshTtlHint', {
-                min: MIN_REFRESH_TOKEN_TTL,
-                max: MAX_REFRESH_TOKEN_TTL,
-                default: DEFAULT_REFRESH_TOKEN_TTL,
-              })}
-            </p>
+            <div className="border-t border-border pt-4">
+              <Label htmlFor="refreshTtl">{t('settings.refreshTokenTtl')}</Label>
+              <Input
+                id="refreshTtl"
+                type="number"
+                className="max-w-md"
+                min={MIN_REFRESH_TOKEN_TTL}
+                max={MAX_REFRESH_TOKEN_TTL}
+                step={1}
+                value={refreshTtl}
+                onChange={(e) => setRefreshTtl(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t('settings.refreshTtlHint', {
+                  min: MIN_REFRESH_TOKEN_TTL,
+                  max: MAX_REFRESH_TOKEN_TTL,
+                  default: DEFAULT_REFRESH_TOKEN_TTL,
+                })}
+              </p>
+            </div>
             <Button type="submit" disabled={updateSetting.isPending}>
               {t('common.save')}
             </Button>
           </form>
         </CardContent>
-      </Card>
+      </CollapsibleCard>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5 text-primary" />
-            <CardTitle>{t('settings.credentials')}</CardTitle>
-          </div>
-          <p className="text-muted-foreground">
-            {t('settings.credentialsDesc')}
-          </p>
-        </CardHeader>
+      <CollapsibleCard
+        id="web"
+        icon={<MonitorSmartphone className="h-5 w-5 text-primary" />}
+        title={t('settings.webDefaultsTitle')}
+        desc={t('settings.webDefaultsDesc')}
+      >
+        <CardContent className="space-y-5">
+          <form onSubmit={handleWebDefaultsSave} className="space-y-4">
+            <Label htmlFor="webQuality">{t('settings.webQuality')}</Label>
+            <select
+              id="webQuality"
+              className="neu-field h-10 w-full max-w-xs px-3 py-2 text-sm"
+              value={webQuality}
+              onChange={(e) => setWebQuality(e.target.value)}
+            >
+              <option value={0}>{t('settings.webQualityAuto')}</option>
+              <option value={2}>{t('settings.webQualityLow')}</option>
+              <option value={3}>{t('settings.webQualityBalanced')}</option>
+              <option value={4}>{t('settings.webQualityBest')}</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {t('settings.webQualityHint')}
+            </p>
+            <Label htmlFor="webFps">{t('settings.webFps')}</Label>
+            <Input
+              id="webFps"
+              type="number"
+              className="max-w-md"
+              min={MIN_WEB_CLIENT_FPS}
+              max={MAX_WEB_CLIENT_FPS}
+              step={1}
+              value={webFps}
+              onChange={(e) => setWebFps(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t('settings.webFpsHint', { min: MIN_WEB_CLIENT_FPS, max: MAX_WEB_CLIENT_FPS, default: DEFAULT_WEB_CLIENT_FPS })}
+            </p>
+            <Label htmlFor="webCodec">{t('settings.webCodec')}</Label>
+            <select
+              id="webCodec"
+              className="neu-field h-10 w-full max-w-xs px-3 py-2 text-sm"
+              value={webCodec}
+              onChange={handleWebCodecChange}
+            >
+              {WEB_CLIENT_CODECS.map((c) => (
+                <option key={c} value={c}>
+                  {t(`settings.webCodec_${c}`)}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">{t('settings.webCodecHint')}</p>
+            <Label htmlFor="webRenderScale">{t('settings.webRenderScale')}</Label>
+            <select
+              id="webRenderScale"
+              className="neu-field h-10 w-full max-w-xs px-3 py-2 text-sm"
+              value={webRenderScale}
+              onChange={(e) => setWebRenderScale(e.target.value)}
+            >
+              {WEB_CLIENT_RENDER_SCALES.map((s) => (
+                <option key={s} value={s}>
+                  {t(`settings.webRenderScale_${s}`)}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">{t('settings.webRenderScaleHint')}</p>
+            <div className="flex items-center justify-between gap-3 rounded-lg border px-4 py-3">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">{t('settings.webCursor')}</p>
+                <p className="text-xs text-muted-foreground">{t('settings.webCursorHint')}</p>
+              </div>
+              <input
+                id="webCursor"
+                type="checkbox"
+                aria-label={t('settings.webCursor')}
+                className="accent-primary h-5 w-5 shrink-0"
+                checked={webCursor}
+                onChange={(e) => setWebCursor(e.target.checked)}
+              />
+            </div>
+            <Label htmlFor="webInputMode">{t('settings.webInputMode')}</Label>
+            <select
+              id="webInputMode"
+              className="neu-field h-10 w-full max-w-xs px-3 py-2 text-sm"
+              value={webInputMode}
+              onChange={(e) => setWebInputMode(e.target.value)}
+            >
+              {WEB_CLIENT_INPUT_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {t(`settings.webInputMode_${m}`)}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">{t('settings.webInputModeHint')}</p>
+            <Button type="submit" disabled={updateSetting.isPending}>
+              {t('common.save')}
+            </Button>
+          </form>
+        </CardContent>
+      </CollapsibleCard>
+
+      <CollapsibleCard
+        id="chat"
+        icon={<MessageCircle className="h-5 w-5 text-primary" />}
+        title={t('settings.chatTitle')}
+        desc={t('settings.chatDesc')}
+      >
+        <CardContent className="space-y-5">
+          <form onSubmit={handleChatSave} className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-lg border px-4 py-3">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">{t('settings.chatGreetingEnabled')}</p>
+                <p className="text-xs text-muted-foreground">{t('settings.chatGreetingHint')}</p>
+              </div>
+              <input
+                id="chatGreetingEnabled"
+                type="checkbox"
+                aria-label={t('settings.chatGreetingEnabled')}
+                className="accent-primary h-5 w-5 shrink-0"
+                checked={chatGreetingEnabled}
+                onChange={(e) => setChatGreetingEnabled(e.target.checked)}
+              />
+            </div>
+            <Label htmlFor="chatGreeting">{t('settings.chatGreeting')}</Label>
+            <Input
+              id="chatGreeting"
+              type="text"
+              maxLength={MAX_WEB_CLIENT_CHAT_TEXT}
+              className="max-w-2xl"
+              value={chatGreeting}
+              onChange={(e) => setChatGreeting(e.target.value)}
+            />
+            <div className="flex items-center justify-between gap-3 rounded-lg border px-4 py-3">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">{t('settings.chatCloseEnabled')}</p>
+                <p className="text-xs text-muted-foreground">{t('settings.chatCloseHint')}</p>
+              </div>
+              <input
+                id="chatCloseEnabled"
+                type="checkbox"
+                aria-label={t('settings.chatCloseEnabled')}
+                className="accent-primary h-5 w-5 shrink-0"
+                checked={chatCloseEnabled}
+                onChange={(e) => setChatCloseEnabled(e.target.checked)}
+              />
+            </div>
+            <Label htmlFor="chatClose">{t('settings.chatClose')}</Label>
+            <Input
+              id="chatClose"
+              type="text"
+              maxLength={MAX_WEB_CLIENT_CHAT_TEXT}
+              className="max-w-2xl"
+              value={chatClose}
+              onChange={(e) => setChatClose(e.target.value)}
+            />
+            <div>
+              <Button type="submit" disabled={updateSetting.isPending}>
+                {t('common.save')}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </CollapsibleCard>
+
+      <CollapsibleCard
+        id="credentials"
+        icon={<ShieldCheck className="h-5 w-5 text-primary" />}
+        title={t('settings.credentials')}
+        desc={t('settings.credentialsDesc')}
+      >
         <CardContent>
           <form onSubmit={handleCredentialsSave} className="space-y-4">
             <div className="space-y-2">
@@ -855,6 +1223,7 @@ export function SettingsPage() {
               <Input
                 id="currentPassword"
                 type="password"
+                className="max-w-md"
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
                 placeholder={t('settings.currentPasswordPh')}
@@ -866,6 +1235,7 @@ export function SettingsPage() {
               <Input
                 id="newUsername"
                 type="text"
+                className="max-w-md"
                 value={newUsername}
                 onChange={(e) => setNewUsername(e.target.value)}
                 placeholder={t('settings.newUsernamePh')}
@@ -877,6 +1247,7 @@ export function SettingsPage() {
               <Input
                 id="newPassword"
                 type="password"
+                className="max-w-md"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder={t('settings.newPasswordPh')}
@@ -888,18 +1259,21 @@ export function SettingsPage() {
               <Input
                 id="confirmPassword"
                 type="password"
+                className="max-w-md"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder={t('settings.confirmPasswordPh')}
                 autoComplete="new-password"
               />
             </div>
-            <Button type="submit" disabled={changeCredentials.isPending}>
-              {changeCredentials.isPending ? t('settings.saving') : t('settings.updateCredentials')}
-            </Button>
+            <div>
+              <Button type="submit" disabled={changeCredentials.isPending}>
+                {changeCredentials.isPending ? t('settings.saving') : t('settings.updateCredentials')}
+              </Button>
+            </div>
           </form>
         </CardContent>
-      </Card>
+      </CollapsibleCard>
     </div>
   )
 }

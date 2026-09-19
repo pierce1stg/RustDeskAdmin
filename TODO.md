@@ -37,24 +37,47 @@
 - [x] i18n: EN / RU / ZH / AR
 
 ## Phase 3: Real-time Updates ✓
-- [x] WebSocket endpoint (`/api/ws/devices`) with presence broadcasts
+- [x] SSE endpoint (`/api/devices/stream`) with presence broadcasts
 - [x] Frontend WS client (auto-reconnect, live online/offline, live timers)
 - [x] Server Info API (`/api/server-info`, field sources, connect-code)
 
-## Phase 4: WebRTC Remote Control (separate / not started)
-- [ ] Signaling proxy (Go WS → hbbs protobuf)
-- [ ] WebRTC stack (frontend: RTCPeerConnection)
-- [ ] Media server (Go: pion/webrtc)
-- [ ] Remote view / data channels / clipboard
-- [ ] TURN server (coturn)
+## Phase 4: Browser Remote Control (rustdesk-web protocol) ✓
+- [x] Frontend WebSocket client (hbbs rendezvous + hbbr relay over WSS, PB decoder, TweetNaCl handshake)
+- [x] Video decode (WebCodecs vp8/vp9/av1) + audio (Opus)
+- [x] 2026-09-17: caps-gate probe (RTCRtpReceiver.getCapabilities) + G2 size ladder (720p→1080p→4K, rollback via setProbeLadderEnabled(false)) + stats codec badge (fact, not preference)
+- [x] 2026-09-18: H.264/H.265 fully out of journal + login default abilities (h264:false/h265:false); journal v2 (levels/categories/search/highlight/clear, record-time gating, drop markers, collapsed count)
+- [x] 2026-09-18: overrule grace 10s (no false releases on manual switch), live debug chip (no reconnect), last-good poison guard, ui audit category (all 14 toolbar actions logged)
+- [x] 2026-09-18: readable input audit (describeKeyEvent: combos+symbols+raw names), hotkey wire logging, decoder picked fact line
+- [x] 2026-09-18: deep floor 1/10 (stuck queue 2 ticks >300ms) for Khabarovsk<->Netherlands link physics
+- [x] 2026-09-18: session chat with host user (Misc.chat_message, window+bubble, drag, persisted positions, unread badge, session-only history)
+- [x] 2026-09-18: chat system messages (greeting/close, per-message toggles in panel settings) + window anchored to bubble
+- [x] 2026-09-18: collapsible settings cards (all but language, persisted) + web defaults for render scale/cursor/input mode + chat emoji picker (files impossible: chat is text-only)
+- [x] 2026-09-18: rank-zero fast start (~10s first ladder decision) + configurable web client name (host dialog) + acceptance guide RU/EN/ZH/AR
+- [x] RemoteScreen: pointer/touch/trackpad gestures, multi-monitor switch, zoom, cursor overlay
+- [x] Clipboard, hotkeys (Ctrl+Alt+Del, Alt+Tab, Win, Esc), stream quality/FPS/auto/low-latency
+- [x] 2FA (TOTP) flow + saved device passwords (encrypted on server; web client pre-fill)
+- [x] Keyboard input (key event proto, code → keycode mapping) + touch keyboard
+- [ ] TURN server (coturn) for strict-NAT environments (works via relay today)
 
 ## DevOps / Deploy
 - [x] Production Docker Compose (`docker compose` + `docker compose -f ...dev.yml`)
 - [x] Nginx + Let's Encrypt (auto-renew, WSS termination)
 - [x] Backup / migration guide (data/ tar + pg_dump)
-- [ ] GitHub Actions CI (lint, test, build)
+- [x] GitHub Actions CI (lint, test, build)
 - [ ] Backup script (scheduled PostgreSQL dump)
-- [ ] Health checks + monitoring
+- [x] Health checks: `/health` is DB-aware now (backend container still lacks a compose healthcheck)
+- [x] 2026-09 audit pass: graceful shutdown, HTTP timeouts + body limits, atomic refresh-token rotation,
+      schema DDL at bootstrap, device undelete-on-reconnect, explicit decrypt errors, dead code removed
+- [x] 2026-09 hardening: `:8080` bound to loopback only, dedicated `DEVICE_SECRET`
+      (JWT fallback for old rows), gin trusted proxies (private ranges),
+      `server_tokens off`, CORS fixed allow-headers + `Vary: Origin`,
+      nginx `client_max_body_size 16M`, single-session `/api/auth/logout`,
+      atomic refresh + refresh rate-limit, `bcrypt` 72B cap, screenshot
+      content-type sniff, stricter hostname/API-URL validation, SSE
+      subscriber cap, `auth_sessions` expiry index, zap production logger
+- [ ] Harden (remaining): default `ALLOW_*_UPDATE=false`, httpOnly cookies for
+      tokens (currently localStorage), per-endpoint rate limits on device
+      password routes
 - [ ] Docker registry images pushed to a public registry
 
 ## Testing
@@ -69,11 +92,11 @@
 - [ ] Architecture decision records (ADR)
 
 ## Git / Release
-- [ ] Publish repo to GitHub (RustDeskAdmin)
-- [ ] Initial tagged release (v0.1.0)
+- [x] Publish repo to GitHub (RustDeskAdmin)
+- [x] Tagged release v1.0.0
 
 ---
 
 ## Priority: High → Medium → Low
 
-**Next up:** deploy the audited/cleaned build to the test host (`docker compose build backend` + frontend image `354ef4397110`), verify `/api/status` and the new bundle; then publish to GitHub and update the archive.
+**Next up:** validate the remote control on the test host under X11, then Wayland (multi-monitor coordinates, cursor host-mode); then publish to GitHub and update the archive.

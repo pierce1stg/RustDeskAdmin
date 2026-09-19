@@ -353,7 +353,7 @@ function InstructionCard({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-3 px-5 py-4 text-start"
+        className="raw-focus flex w-full select-none items-center justify-between gap-3 px-5 py-4 text-start"
       >
         <span className="flex min-w-0 items-center gap-2">
           <BookOpen className="h-5 w-5 shrink-0 text-primary" />
@@ -430,7 +430,7 @@ function ImageCarousel({ images }: { images: string[] }) {
             type="button"
             aria-label={t('download.prevImage')}
             onClick={prev}
-            className="absolute inset-y-0 start-0 flex w-10 items-center justify-center bg-gradient-to-r from-black/40 to-transparent text-white transition-opacity hover:opacity-80"
+            className="raw-focus absolute inset-y-0 start-0 flex w-10 items-center justify-center bg-gradient-to-r from-black/40 to-transparent text-white transition-opacity hover:opacity-80"
           >
             <ChevronLeft className="h-6 w-6" />
           </button>
@@ -438,7 +438,7 @@ function ImageCarousel({ images }: { images: string[] }) {
             type="button"
             aria-label={t('download.nextImage')}
             onClick={next}
-            className="absolute inset-y-0 end-0 flex w-10 items-center justify-center bg-gradient-to-l from-black/40 to-transparent text-white transition-opacity hover:opacity-80"
+            className="raw-focus absolute inset-y-0 end-0 flex w-10 items-center justify-center bg-gradient-to-l from-black/40 to-transparent text-white transition-opacity hover:opacity-80"
           >
             <ChevronRight className="h-6 w-6" />
           </button>

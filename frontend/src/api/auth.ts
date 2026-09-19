@@ -40,3 +40,18 @@ export const useChangeCredentials = () => {
     },
   })
 }
+
+// Best-effort server-side session revoke. Clearing local tokens always
+// happens; a failed revoke never blocks signing out.
+export async function logoutRemote(): Promise<void> {
+  const refreshToken = useAuthStore.getState().refreshToken
+  try {
+    if (refreshToken) {
+      await api.post('/auth/logout', { refresh_token: refreshToken })
+    }
+  } catch {
+    // ignore — local logout below is what matters
+  } finally {
+    useAuthStore.getState().logout()
+  }
+}

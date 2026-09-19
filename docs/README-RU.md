@@ -1,4 +1,4 @@
-# RustDesk Admin
+# RustDesk Admin — v1.0.0
 
 <p align="center">
   [<a href="../README.md">English</a>] | [<a href="README-ZH.md">中文</a>] | [<a href="README-AR.md">العربية</a>]<br>
@@ -17,12 +17,12 @@
 повторный запуск `./setup.sh` не теряют данные и настройки.
 
 ```
-rustdesk-stack/
+RustDeskAdmin/
 ├── docker-compose.yml         # 8 сервисов, одна сеть
 ├── docker-compose.dev.yml     # опциональный overlay: air hot-reload + vite dev
 ├── setup.sh                   # первичный bootstrap (идемпотентный)
 ├── .env.example               # шаблон; скопируйте в .env
-├── Makefile                   # вспомогательные команды (dev/build/logs/db ...)
+├── Makefile                   # вспомогательные команды (dev/build/logs/shell/test …)
 ├── backend/                   # Go admin API (компилируется в маленький prod-образ)
 ├── frontend/                  # React admin UI (статический nginx / SPA)
 ├── nginx/nginx.conf.template  # ${DOMAIN} + ACME webroot + WSS-терминация
@@ -31,7 +31,8 @@ rustdesk-stack/
 ├── data/                      # ЖИВЫЕ ДАННЫЕ - создаётся setup.sh:
 │   ├── hbbs/                  #   ключ hbbs/hbbr (id_ed25519) + БД устройств (sqlite)
 │   ├── postgres/              #   каталог данных Postgres (bind mount)
-│   └── certbot/etc/           #   Let's Encrypt live/archive/renewal
+│   ├── screenshots/           #   загрузки страницы скачивания (SCREENSHOTS_DIR)
+│   └── certbot/etc/           #   Let's Encrypt live/archive/renewal (+ www/)
 └── status/                    # presence.json (пишет presence-контейнер)
 ```
 
@@ -55,6 +56,8 @@ rustdesk-stack/
 - [Сертификаты (Let's Encrypt)](#сертификаты-lets-encrypt)
 - [Информация о сервере (Server Info)](#информация-о-сервере-server-info)
 - [Web-клиент RustDesk](#web-клиент-rustdesk)
+- [Удалённое управление из браузера](#удалённое-управление-из-браузера)
+- [Публичная страница загрузки](#публичная-страница-загрузки)
 - [Строка подключения клиента](#строка-подключения-клиента)
 - [Режим разработки (dev overlay)](#режим-разработки-dev-overlay)
 - [Источники загрузки и зеркала (Block C)](#источники-загрузки-и-зеркала-block-c)
@@ -70,10 +73,12 @@ rustdesk-stack/
 
 - **Веб-панель администрирования** (SPA React + Go API):
   - Dashboard — сводка состояния сервера, «живое» присутствие.
-  - Devices — список зарегистрированных устройств (`GET /api/devices`), просмотр
-    деталей, удаление.
-  - Settings — настройки (крадут из seed'ов после первого входа, хранятся в БД);
-    срок жизни сессии настраивается здесь же.
+  - Devices — список зарегистрированных устройств (`GET /api/devices`), колонки
+    PeerInfo (хост/пользователь/ОС/версия/мониторы), поиск, пин/алиас,
+    шифрованные сохранённые пароли, просмотр деталей, удаление.
+  - Settings — сворачиваемые секции (состояние хранится в браузере), настройки
+    (сидятся из `.env`, далее владеет БД); дефолты веб-клиента, системные
+    сообщения чата и отображаемое имя клиента настраиваются здесь.
   - Login = JWT access + refresh токены с сессиями на сервере; сессии ротируются и
     чистятся при истечении refresh-токена; смена пароля админа.
 - **Live-присутствие** (`presence`-контейнер):
@@ -84,7 +89,7 @@ rustdesk-stack/
   - статус также агрегируется бэкендом и выдаётся через `/api/status`.
 - **RustDesk сервер**: hbbs (ID-сервер) + hbbr (relay) от официального образа
   `rustdesk/rustdesk-server:1.1.16`; ключ и БД устройств в `data/hbbs/`.
-- **Writing-TLS**: самообслуживаемый Let's Encrypt (webroot), авто-обновление каждые
+- **Zero-config TLS**: самообслуживаемый Let's Encrypt (webroot), авто-обновление каждые
   12ч, а также WSS-терминация nginx на портах 21118/21119 для RustDesk TCP-mux.
 - **Server Info** с источниками: клиенты/веб-клиент берут адрес/порты/ключ из API
   (`GET /api/server-info`) — каждое поле сообщает, откуда взято (env/naстройка/стек).
@@ -168,10 +173,12 @@ Let's Encrypt HTTP-01 challenge. Если при первом запуске п�
 POSTGRES_PASSWORD=$(openssl rand -base64 32)
 JWT_SECRET=$(openssl rand -base64 32)
 JWT_REFRESH_SECRET=$(openssl rand -base64 32)
+DEVICE_SECRET=$(openssl rand -base64 32)
 ```
 
 ...и впишите значения в `.env`. Можно оставить `changeme` — скрипт заменит их
-случайными значениями при первом запуске.
+случайными значениями при первом запуске. `setup.sh` падает, если `DOMAIN`
+пуст или остался плейсхолдером `app.example.com` — укажите реальный хост.
 
 `setup.sh` (идемпотентный) сделает:
 
@@ -220,6 +227,22 @@ hbbs/hbbr), `ALLOW_SERVER_UPDATE` (true, включает карточку Serve
 `ALLOW_PANEL_UPDATE` (true, включает карточку Panel update в панели — проверка
 и обновление только по кнопке; автоматического самообновления нет).
 
+### Дефолты веб-клиента (разовые seeds, далее Settings → Web client)
+
+| Переменная | По умолч. | Допустимо | Назначение |
+|------------|-----------|-----------|------------|
+| `WEB_CLIENT_QUALITY` | 3 | 0 (авто), 2, 3, 4 | стартовое качество картинки |
+| `WEB_CLIENT_FPS` | 30 | 1..240 | стартовый FPS |
+| `WEB_CLIENT_CODEC` | auto | auto, vp8, vp9, av1 | стартовый кодек |
+| `WEB_CLIENT_RENDER_SCALE` | auto | auto, original, 144p..1440p | потолок детализации |
+| `WEB_CLIENT_CURSOR` | false | true/false | оверлей курсора включён |
+| `WEB_CLIENT_INPUT_MODE` | auto | auto, touch, pointer | режим ввода (`auto` = по устройству) |
+| `WEB_CLIENT_NAME` | Web Browser | 1..64 символа | имя, которое видят хосты |
+| `WEB_CLIENT_CHAT_GREETING` | Hello! How can I help you? | ≤2000 символов, пусто = молчит | автоприветствие при первом открытии чата |
+| `WEB_CLIENT_CHAT_GREETING_ENABLED` | true | true/false | тумблер приветствия |
+| `WEB_CLIENT_CHAT_CLOSE` | The operator has closed the chat. | ≤2000 символов, пусто = молчит | уведомление о закрытии чата |
+| `WEB_CLIENT_CHAT_CLOSE_ENABLED` | true | true/false | тумблер уведомления |
+
 ### Срок жизни сессии (JWT TTL)
 
 Access-токен закрывает каждый API-запрос; refresh-токен держит браузерную сессию
@@ -247,7 +270,7 @@ Access-токен закрывает каждый API-запрос; refresh-то
 | `RELAY_PORT`     | 21117     | hbbr relay (tcp+udp)                     |
 | `WSS_ID_PORT`    | 21118     | WSS → hbbs (TLS-терминация nginx)        |
 | `WSS_RELAY_PORT` | 21119     | WSS → hbbr (TLS-терминация nginx)        |
-| `API_PORT`       | 8080      | порт backend на хосте (отладка)          |
+| `API_PORT`       | 8080      | порт backend, только loopback (`127.0.0.1`, отладка по ssh) |
 
 Внутри контейнеров слушающие порты фиксированы; параметризуется только маппинг на
 хост. Пример: если 443 занят другим сервисом — поставьте `HTTPS_PORT=8443`.
@@ -288,10 +311,45 @@ Access-токен закрывает каждый API-запрос; refresh-то
 
 ## Web-клиент RustDesk
 
-nslookup обратное: для подключения web-клиентом
+Для подключения web-клиентом
 (https://rustdesk.com/web) настройте Server Info панели на ваш `DOMAIN` и порты,
 и используйте ключ из панели. CORS-заголовки в nginx разрешают origins
 `rustdesk.com`/`web.rustdesk.com`.
+
+---
+
+## Удалённое управление из браузера
+
+Сама панель ведёт удалённые сессии в браузере (`control/:id`) — десктопный
+клиент не нужен:
+
+- **Кодеки**: только программный декод VP8 / VP9 / AV1 (WebCodecs); аппаратные
+  кодеки сознательно не предлагаются. Авто стартует с доказанного (`last-good`,
+  иначе VP9); ручной выбор буквальный, с grace-периодом перед признанием хоста
+  несоответствующим и баннером «назад в Авто».
+- **Авто-лесенка качества** с глубоким дном (до 1/10 при залипшей очереди),
+  турбо-пресет (Low/60/самый дешёвый + восстановление в один клик), потолки
+  render-scale.
+- **Журнал сессии v2**: уровни, категории, поиск с подсветкой, гейт записи по
+  классам, маркеры обрывов, сворачивание со счётчиком, полный `ui:`-аудит.
+- **Чат сессии**: плавающее окно + стыкуемый кружок (позиции persist'ятся),
+  бейдж непрочитанных, emoji-picker, настраиваемые приветствие / уведомление о
+  закрытии, отображаемое имя клиента, история только на сессию. Только текст —
+  в протоколе нет передачи файлов и закрытия чата на хосте.
+- Буфер обмена в обе стороны, хоткеи, переключение мониторов, зум, тач-трекпад,
+  оверлей удалённого курсора.
+
+Матрица приёмки и карта строк журнала: `acceptance-RU.md`
+(EN/ZH/AR рядом), человеческий чек-лист: `manual-checklist.md`.
+
+---
+
+## Публичная страница загрузки
+
+Панель отдаёт публичную страницу загрузки клиентов (`/download`, настраивается
+в `/download-config`): тексты по локалям, секции платформ с кнопками загрузки,
+загрузка скриншотов (хранятся в `SCREENSHOTS_DIR`, `./data/screenshots` по
+умолчанию — не путать с `docs/screenshots/`, там картинки этого README).
 
 ---
 
@@ -509,6 +567,10 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 | GET   | `/api/devices`       | список устройств (пагинация)                      |
 | PATCH | `/api/devices/:id`   | обновление устройства (alias, pinned)             |
 | DELETE| `/api/devices/:id`   | удаление устройства                               |
+| GET   | `/api/devices/:id/password` | состояние сохранённого пароля (не сам секрет) |
+| PUT   | `/api/devices/:id/password` | сохранить шифрованный пароль устройства     |
+| DELETE| `/api/devices/:id/password` | удалить сохранённый пароль                  |
+| PATCH | `/api/devices/peer/:peerId/peerinfo` | снимок PeerInfo (хост/версия/мониторы) |
 | GET   | `/api/status`        | живой статус hbbs/hbbr + присутствие              |
 | GET   | `/api/devices/stream`| SSE: живые обновления online/offline присутствия |
 | GET   | `/api/settings`      | настройки                                         |
@@ -520,3 +582,5 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 | GET   | `/health`            | health-check                                      |
 
 Авторизация: заголовок `Authorization: Bearer <access_token>`.
+
+> OpenAPI-спецификации в v1.0.0 нет — эталоном служат таблица выше и гайды приёмки.
