@@ -33,6 +33,20 @@ Everything below needs human eyes / real devices.
 - [ ] Panel Settings web defaults (quality/fps/codec) apply to new sessions.
 - [ ] Locales RU/EN/ZH/AR: dialogs fit, no overflow, RTL (AR) sane.
 
+## Panel self-update card (Settings → Panel update)
+- [ ] Open the card on a stale state → status/log/backups load without F5; window
+      blur/focus re-pulls; Refresh button re-pulls all four (status/log/backups/preflight).
+- [ ] Run apply or rollback → log streams live, no page reload needed; terminal toast appears.
+- [ ] Clean manual rollback → green banner + success toast (no red); F5 keeps it green, not red.
+- [ ] Failed update with auto-rollback → red banner with the kept cause; toast shows the cause.
+- [ ] Terminal banner X → hides it; stays hidden across F5 until the next run or a reset.
+- [ ] Backups section shows the `data/.panel-update-backups` path hint; dropping a foreign
+      `pre-vX.Y.Z.tar.gz` there + Refresh lists it and rollback to it works.
+- [ ] Create-backup button → `pre-vX.Y.Z-manual-<ts>.tar.gz` appears with date/time;
+      rollback to it and deletion work like automatic copies.
+- [ ] Reset button visible for any non-idle phase (incl. terminal ok/rolled_back/error);
+      reset clears status + log and returns the card to a clean slate.
+
 ## Telemetry to attach to bug reports
 Session journal (`Terminal` button) + `browser codecs:` line + stats row
 (FPS/down/ping/decode/paint/queue) + browser version + host OS.

@@ -106,7 +106,7 @@ RustDeskAdmin/
 
 | Service  | Image                                        | Purpose                                              |
 |----------|----------------------------------------------|------------------------------------------------------|
-| postgres | postgres:16-alpine                           | panel DB (`./data/postgres`), migrations on boot     |
+| postgres | postgres:16-alpine                           | panel DB (`./data/postgres`), schema seeded on first init + lazy column ensures |
 | backend  | built (`backend/Dockerfile`, prod stage)     | REST API + WebSocket + presence reader               |
 | frontend | built (`frontend/Dockerfile`, prod stage)    | admin UI (static nginx / SPA)                        |
 | nginx    | nginx:alpine                                 | HTTPS panel, ACME webroot, WSS 21118/21119           |
@@ -127,6 +127,8 @@ an OS reboot or Docker restart.
   apt update && apt install -y docker.io docker-compose-v2
   systemctl enable --now docker
   ```
+  (`setup.sh` also needs `openssl` and `curl` on the host and aborts with an
+  install hint if anything is missing; verified on Ubuntu 22.04/24.04.)
 - A public domain pointing (DNS A record) to this server.
 - Free TCP ports: `80`, `443`, `21115`–`21119` (+ UDP `21116`, `21117`);
   all remappable via `.env` (see below).
@@ -156,7 +158,7 @@ ufw enable
 ## Install from scratch
 
 ```
-git clone https://github.com/pierce1stg/RustDeskAdmin.git
+git clone https://github.com/pierce1stg/RustDeskAdmin
 cd RustDeskAdmin
 
 cp .env.example .env
@@ -188,14 +190,14 @@ is empty or still the `app.example.com` placeholder — set a real hostname firs
 
 `setup.sh` (idempotent) will:
 
-1. generate `POSTGRES_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET` if empty/`changeme`;
+1. generate `POSTGRES_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `DEVICE_SECRET` if empty/`changeme`;
 2. create `data/` and `status/`;
 3. put a self-signed placeholder into `data/certbot/etc/live/<DOMAIN>` so nginx
    always boots with TLS;
 4. `docker compose up -d --build`;
 5. wait for hbbs to create `data/hbbs/db_v2.sqlite3`;
 6. issue the real Let's Encrypt certificate via HTTP-01 webroot on port 80
-   (`--cert-name <DOMAIN>`) and reload nginx immediately;
+   (`--cert-name <DOMAIN>-le`, then `live/<DOMAIN>` is symlinked to it) and reload nginx immediately;
 7. print the summary.
 
 Re-run `./setup.sh` any time to (re)build, (re)create containers, or (re)issue a cert.
@@ -295,8 +297,9 @@ parameterized. Example: if another service owns host port 443, set
 - Renewal: the `certbot` container runs `certbot renew --quiet` every 12h; nginx
   self-reloads every 6h to pick up new certs (no docker CLI inside certbot).
 
-The `--cert-name <DOMAIN>` flag makes certbot write to
-`data/certbot/etc/live/<DOMAIN>`, which is what the nginx template reads.
+The `--cert-name <DOMAIN>-le` flag makes certbot write to a dedicated
+`data/certbot/etc/live/<DOMAIN>-le` lineage; on success `live/<DOMAIN>` (what
+the nginx template reads) becomes a symlink into it.
 
 ---
 
@@ -337,10 +340,11 @@ desktop client needed:
 - **Auto quality ladder** with a deep floor (down to 1/10 on a stuck queue),
   turbo preset (Low/60/cheapest + one-click restore), render-scale caps.
 - **Session journal v2**: levels, categories, search with highlight, per-class
-  record gating, drop markers, collapsible with a count badge.
+  record gating, drop markers, collapsible with a count badge, full `ui:` audit.
 - **Session chat**: floating window + dockable bubble (positions persist),
-  unread badge, emoji picker, configurable greeting / close notice, session-only
-  history. Text only — the protocol has no file transfer or remote chat-close.
+  unread badge, emoji picker, configurable greeting / close notice, configurable
+  client display name, session-only history. Text only — the protocol has no
+  file transfer or remote chat-close.
 - Clipboard both ways, hotkeys, multi-monitor switch, zoom, touch trackpad,
   remote-cursor overlay.
 
@@ -443,7 +447,7 @@ Notes:
 
 | `DOCKER_PRUNE_ON_BUILD` | What is removed                                          |
 |-------------------------|----------------------------------------------------------|
-| `all` (default)         | every image not used by a running container (base build images like `golang`/`node`/`python` alpine get re-pulled on the next rebuild), stopped one-shot containers, unused networks/volumes |
+| `all` (default)         | every image not used by a running container (base build images like `golang`/`node`/`python` alpine get re-pulled on the next rebuild), stopped one-shot containers, unused networks (volumes are never removed) |
 | `safe`                  | only dangling images + build cache                       |
 | `none`                  | no cleanup                                               |
 
@@ -458,7 +462,7 @@ ran out of space mid-way.
 
 ## Backup and migration
 
-**All state lives inside `rustdesk-stack/`:**
+**All state lives inside the checkout directory (`RustDeskAdmin/` after clone):**
 
 - **Server identity + devices**: `data/hbbs/` (keep `id_ed25519*` and
   `db_v2.sqlite3*`). Fresh installs only if you don't care about the key/devices.
@@ -470,14 +474,14 @@ ran out of space mid-way.
 ### Moving to a production host
 
 ```
-# old host
+# old host (inside the checkout, e.g. ~/RustDeskAdmin)
 docker compose stop postgres
-mkdir -p ~/rustdesk-migrate && cp -a rustdesk-stack/data ~/rustdesk-migrate/data
+mkdir -p ~/rustdesk-migrate && cp -a data ~/rustdesk-migrate/data
 tar czf ~/rustdesk-migrate/data.tgz -C ~/rustdesk-migrate data
 
 # new host
-git clone https://github.com/pierce1stg/RustDeskAdmin.git && cd RustDeskAdmin
-cp .env.example .env            # set DOMAIN, EMAIL, same POSTGRES_PASSWORD
+git clone https://github.com/pierce1stg/RustDeskAdmin && cd RustDeskAdmin
+cp .env.example .env            # set DOMAIN, LETSENCRYPT_EMAIL, same POSTGRES_PASSWORD
 mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 ./setup.sh
 ```
@@ -495,16 +499,30 @@ Two independent parts update differently.
 The panel can update itself from a tagged GitHub release:
 
 1. **In-panel (Settings → Panel update)**: checks the newest stable `vX.Y.Z`
-   release, downloads the checksum-verified bundle, replaces the code and
-   re-runs `./setup.sh` (~1–3 min, data and `.env` preserved, automatic
-   rollback). Updates only run when you press the Update button — the panel
-   never updates itself automatically. Gated by `ALLOW_PANEL_UPDATE`
-   (default `true`).
+   release, downloads the checksum-verified bundle (3 attempts), replaces the
+   code and re-runs `./setup.sh` (~1–3 min, data and `.env` preserved,
+   automatic rollback). A pre-update check shows bundle reachability, free disk
+    space and runner state. While a run is active the card streams the runner
+    log and keeps status/log/backups fresh on its own (polling + refetch on
+    window focus); a manual Refresh button re-pulls everything without a page
+    reload. Every exit path (including crashes) records a terminal state — a
+    stuck status can be reset from the UI, and terminal banners can be
+    dismissed. A successful manual rollback shows a green confirmation, not a
+    red failure (red is reserved for real failures with the kept cause).
+    Updates only run when you press the Update button — the panel never
+    updates itself automatically. Gated by
+    `ALLOW_PANEL_UPDATE` (default `true`).
 2. **Manual**: pull the code and re-run the idempotent bootstrap:
-   ```
-   git pull
-   ./setup.sh        # rebuilds the custom images, keeps .env and data/
-   ```
+    ```
+    git pull
+    ./setup.sh        # rebuilds the custom images, keeps .env and data/
+    ```
+3. **Backups**: every run stores the previous tree in
+    `data/.panel-update-backups/pre-vX.Y.Z.tar.gz`, listed in the same card
+    with one-click rollback to any copy and deletion. The card shows the
+    storage path — you can drop your own `pre-vX.Y.Z.tar.gz` there and press
+    Refresh to roll back to it, or snapshot the running tree on demand with
+    the Create-backup button (`pre-vX.Y.Z-manual-<ts>.tar.gz`).
 
 The running panel version is shown in the sidebar footer
 (`backend/internal/appversion/version.go`).

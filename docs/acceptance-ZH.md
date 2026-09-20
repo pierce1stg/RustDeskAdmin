@@ -26,7 +26,7 @@
 | `probe: caps gate on (N video mimes)` | 引擎能力门已启用 |
 | `probe: X capped at 720p/1080p/4K` | 引擎上限；自动模式不会超出 |
 | `browser codecs: a,b,c` | 探测结论 |
-| `codec preference at login: auto -> X (last-good)` |  proven 优先启动 |
+| `codec preference at login: auto -> X (last-good)` | proven 优先启动 |
 | `codec preference: X (prefer=N)`（调试） | 手动锁定 / 预设已发往主机 |
 | `codec X during grace after pin Y`（调试） | 过渡中，主机正在切换（10 秒内）——正常 |
 | `host streams X despite manual Y`（警告） | 主机 10 秒以上无视锁定——检查主机是否支持 Y |
@@ -68,7 +68,7 @@
 | 5 | 横幅上“回到自动” | 无需重连即恢复 |
 | 6–7 | Turbo 开 / 关 | 预设生效；精确恢复（核对选择器） |
 | 8 | 自动模式重连 | 直接 `auto -> X (last-good)`，不乱切 |
-| 9 | 聊天双向 | 主机弹出聊天窗口；未读徽标；位置 survive reload |
+| 9 | 聊天双向 | 主机弹出聊天窗口；未读徽标；位置在重载后保留 |
 | 10 | 断线 10–15 秒 | `connection lost` 标记，自动重连，日志完整 |
 | 11 | 多显示器（如有） | `display switched`，新分辨率下 `decoder picked` |
 

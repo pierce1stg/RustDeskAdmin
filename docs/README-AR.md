@@ -1,4 +1,4 @@
-# RustDesk Admin — v1.0.0
+# RustDesk Admin
 
 <p align="center">
   [<a href="../README.md">English</a>] | [<a href="README-RU.md">Русский</a>] | [<a href="README-ZH.md">中文</a>]<br>
@@ -27,7 +27,7 @@ RustDeskAdmin/
 ├── frontend/                  # واجهة React للإدارة (nginx ثابت / SPA)
 ├── nginx/nginx.conf.template  # ${DOMAIN} + ACME webroot + إنهاء WSS
 ├── presence/Dockerfile        # مقياس الحضور (docker.sock + nsenter)
-├── scripts/presence.sh        # لقطة الاتصالات الحية (نامى فضاءات hbbs/hbbr)
+├── scripts/presence.sh        # لقطة الاتصالات الحية (نطاقات hbbs/hbbr)
 ├── data/                      # البيانات الحية - يُنشئها setup.sh:
 │   ├── hbbs/                  #   مفتاح hbbs/hbbr (id_ed25519) + قاعدة أجهزة sqlite
 │   ├── postgres/              #   دليل بيانات Postgres (bind mount)
@@ -100,7 +100,7 @@ RustDeskAdmin/
 
 | الخدمة  | الصورة                                       | الغرض                                                   |
 |---------|-----------------------------------------------|---------------------------------------------------------|
-| postgres | postgres:16-alpine                           | قاعدة بيانات اللوحة (`./data/postgres`)، ترحيلات عند الإقلاع |
+| postgres | postgres:16-alpine                           | قاعدة بيانات اللوحة (`./data/postgres`)، إنشاء المخطط عند أول إقلاع + فحص أعمدة كسول |
 | backend  | مبنية (`backend/Dockerfile`، مرحلة prod)     | REST API + WebSocket + قارئ الحضور                      |
 | frontend | مبنية (`frontend/Dockerfile`، مرحلة prod)    | واجهة الإدارة (nginx ثابت / SPA)                        |
 | nginx    | nginx:alpine                                  | HTTPS للوحة، ACME webroot، WSS 21118/21119              |
@@ -121,6 +121,8 @@ RustDeskAdmin/
   apt update && apt install -y docker.io docker-compose-v2
   systemctl enable --now docker
   ```
+  (يحتاج `setup.sh` أيضًا إلى `openssl` و`curl` على المضيف، ويتوقف مع تلميح
+  تثبيت عند غيابهما؛ تم التحقق على Ubuntu 22.04/24.04.)
 - نطاق عام يشير (سجل DNS A) إلى هذا الخادم.
 - منافذ TCP خالية: `80`، `443`، `21115`–`21119` (بالإضافة إلى UDP `21116` و`21117`)؛
   جميعها قابلة لإعادة التعيين عبر `.env` (انظر أدناه).
@@ -150,7 +152,7 @@ ufw enable
 ## التثبيت من الصفر
 
 ```
-git clone https://github.com/pierce1stg/RustDeskAdmin.git
+git clone https://github.com/pierce1stg/RustDeskAdmin
 cd RustDeskAdmin
 
 cp .env.example .env
@@ -182,14 +184,14 @@ DEVICE_SECRET=$(openssl rand -base64 32)
 
 سينفّذ `setup.sh` (idempotent):
 
-1. يولّد `POSTGRES_PASSWORD` و`JWT_SECRET` و`JWT_REFRESH_SECRET` إن كانت فارغة/`changeme`؛
+1. يولّد `POSTGRES_PASSWORD` و`JWT_SECRET` و`JWT_REFRESH_SECRET` و`DEVICE_SECRET` إن كانت فارغة/`changeme`؛
 2. ينشئ `data/` و`status/`؛
 3. يضع شهادة placeholder موقّعة ذاتيًا في `data/certbot/etc/live/<DOMAIN>` ليعمل
    nginx دائمًا مع TLS؛
 4. `docker compose up -d --build`؛
 5. ينتظر إنشاء hbbs لملف `data/hbbs/db_v2.sqlite3`؛
 6. يصدر شهادة Let's Encrypt حقيقية عبر HTTP-01 webroot على المنفذ 80
-   (`--cert-name <DOMAIN>`) ويعيد تحميل nginx فورًا؛
+   (`--cert-name <DOMAIN>-le`، ثم يصبح `live/<DOMAIN>` رابطًا رمزيًا إليه) ويعيد تحميل nginx فورًا؛
 7. يطبع ملخصًا.
 
 أعد تشغيل `./setup.sh` في أي وقت لإعادة البناء أو إنشاء الحاويات أو إصدار الشهادة.
@@ -214,11 +216,14 @@ DEVICE_SECRET=$(openssl rand -base64 32)
 | `POSTGRES_PASSWORD`     | كلمة مرور Postgres (تُولَّد تلقائيًا إذا كانت `changeme`) |
 | `JWT_SECRET`            | سر توقيع JWT للـ API (يُولَّد تلقائيًا)                |
 | `JWT_REFRESH_SECRET`    | سر رمز refresh (يُولَّد تلقائيًا)                      |
+| `DEVICE_SECRET`         | مفتاح تخزين كلمات مرور الأجهزة (يُولَّد تلقائيًا؛ الفارغ يقرأ الصفوف القديمة عبر JWT fallback) |
 
 ### Block B (بذور لمرة واحدة — اللوحة تملك الإعدادات لاحقًا)
 
 `ADMIN_USERNAME` و`ADMIN_PASSWORD` و`STATUS_REFRESH_INTERVAL` (30s)
-و`SERVER_DISPLAY_ADDRESS` (تجاوز اختياري) و`RUSTDESK_PUBLIC_KEY` (اختياري؛ في ستاك
+و`STATUS_REFRESH_MODE` (push) و`SERVER_DISPLAY_ADDRESS` (تجاوز اختياري)
+و`RELAY_ADDRESS` / `RUSTDESK_API_SERVER` (تجاوزات Server Info الاختيارية)
+و`RUSTDESK_PUBLIC_KEY` (اختياري؛ في ستاك
 جديد يولّد hbbs المفتاح في `data/hbbs`) و`RUSTDESK_ID_PORT` و`RUSTDESK_RELAY_PORT`
 و`RUSTDESK_WS_PORT` و`ACCESS_TOKEN_TTL_MINUTES` (60) و`REFRESH_TOKEN_TTL_DAYS` (7)
 و`RUSTDESK_SERVER_VERSION` (1.1.16، تثبيت compose لـ hbbs/hbbr) و`ALLOW_SERVER_UPDATE`
@@ -283,8 +288,9 @@ DEVICE_SECRET=$(openssl rand -base64 32)
 - التجديد: حاوية `certbot` تشغّل `certbot renew --quiet` كل 12 ساعة؛ nginx يعيد تحميل
   نفسه كل 6 ساعات لالتقاط الشهادات الجديدة (لا docker CLI داخل certbot).
 
-علامة `--cert-name <DOMAIN>` تجعل certbot يكتب إلى
-`data/certbot/etc/live/<DOMAIN>` وهو ما يقرأه قالب nginx.
+علامة `--cert-name <DOMAIN>-le` تجعل certbot يكتب إلى lineage مستقل
+`data/certbot/etc/live/<DOMAIN>-le`؛ عند النجاح يصبح `live/<DOMAIN>`
+(وهو ما يقرأه قالب nginx) رابطًا رمزيًا إليه.
 
 ---
 
@@ -439,7 +445,7 @@ APK_MIRROR=https://mirror.example.com/alpine
 
 ## النسخ الاحتياطي والترحيل
 
-**كل الحالة تعيش داخل `rustdesk-stack/`:**
+**كل الحالة تعيش داخل دليل الـ checkout (بعد الـ clone يكون `RustDeskAdmin/`):**
 
 - **هوية الخادم + الأجهزة**: `data/hbbs/` (احتفظ بـ `id_ed25519*` و`db_v2.sqlite3*`).
   التثبيت من جديد فقط إن لم تكن تهتم بالمفتاح/الأجهزة.
@@ -451,14 +457,14 @@ APK_MIRROR=https://mirror.example.com/alpine
 ### الانتقال إلى مضيف إنتاج
 
 ```
-# المضيف القديم
+# المضيف القديم (داخل الـ checkout، مثل ~/RustDeskAdmin)
 docker compose stop postgres
-mkdir -p ~/rustdesk-migrate && cp -a RustDeskAdmin/data ~/rustdesk-migrate/data
+mkdir -p ~/rustdesk-migrate && cp -a data ~/rustdesk-migrate/data
 tar czf ~/rustdesk-migrate/data.tgz -C ~/rustdesk-migrate data
 
 # المضيف الجديد
-git clone https://github.com/pierce1stg/RustDeskAdmin.git && cd RustDeskAdmin
-cp .env.example .env            # اضبط DOMAIN وEMAIL وPOSTGRES_PASSWORD نفسه
+git clone https://github.com/pierce1stg/RustDeskAdmin && cd RustDeskAdmin
+cp .env.example .env            # اضبط DOMAIN وLETSENCRYPT_EMAIL وPOSTGRES_PASSWORD نفسه
 mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 ./setup.sh
 ```
@@ -476,8 +482,14 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 تستطيع اللوحة تحديث نفسها من إصدار موسوم (tagged release) على GitHub:
 
 1. **من اللوحة (Settings → Panel update)**: يفحص أحدث إصدار **مستقر** `vX.Y.Z`، وينزّل الحزمة
-   المفحوصة بـ SHA-256، ويستبدل كود اللوحة ويشغّل `./setup.sh` (من 1 إلى 3 دقائق، مع
-   الحفاظ على البيانات و`.env`، وتراجع تلقائي عند الفشل). يعمل التحديث فقط عند الضغط
+   المفحوصة بـ SHA-256 (3 محاولات عند التعثر)، ويستبدل كود اللوحة ويشغّل `./setup.sh` (من 1 إلى 3 دقائق، مع
+   الحفاظ على البيانات و`.env`، وتراجع تلقائي عند الفشل). قبل البدء يظهر فحص مسبق: الوصول إلى الحزمة
+   ومساحة القرص وحالة العدّاء. أثناء العمل تعرض البطاقة سجل العدّاء الحي، وتتحدث الحالة
+   والسجل والنسخ تلقائيًا (استطلاع + إعادة جلب عند التركيز على النافذة)؛ زر التحديث
+   يعيد سحب كل شيء دون إعادة تحميل الصفحة. أي انقطاع يسجَّل حالة
+   نهائية، والحالة العالقة تُصفَّر بزر، ولافتات الحالات النهائية قابلة للإغلاق.
+   التراجع اليدوي الناجح يظهر بالأخضر (الأحمر مخصص فقط للفشل الحقيقي مع سببه المحفوظ).
+   يعمل التحديث فقط عند الضغط
    على زر التحديث — لا تحدّث اللوحة نفسها تلقائيًا أبدًا. يتحكم به `ALLOW_PANEL_UPDATE`
    (الافتراضي `true`).
 2. **يدويًا**: اسحب الكود وأعد تشغيل السكربت التمهيدي (idempotent):
@@ -485,6 +497,11 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
    git pull
    ./setup.sh        # يعيد بناء الصور، مع الحفاظ على .env و data/
    ```
+3. **النسخ**: كل تشغيل يحفظ الشجرة السابقة في
+   `data/.panel-update-backups/pre-vX.Y.Z.tar.gz`. تعرض البطاقة مسار التخزين،
+   وتدعم التراجع بنقرة لأي نسخة وحذفها؛ يمكنك وضع نسختك `pre-vX.Y.Z.tar.gz`
+   هناك يدويًا والضغط على تحديث ثم التراجع إليها، أو أخذ لقطة للكود الحالي
+   بزر الإنشاء (`pre-vX.Y.Z-manual-<ts>.tar.gz`).
 
 إصدار اللوحة الحالي ظاهر في تذييل الصفحة
 (`backend/internal/appversion/version.go`).
@@ -547,6 +564,7 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 |---------|-----------------------------|------------------------------------------------|
 | POST    | `/api/auth/login`           | تسجيل الدخول، يعيد access+refresh JWT          |
 | POST    | `/api/auth/refresh`         | تجديد رمز access                               |
+| POST    | `/api/auth/logout`          | تسجيل الخروج (idempotent)                      |
 | PUT     | `/api/auth/password`        | تغيير بيانات admin (≥8 أحرف)                   |
 | GET     | `/api/devices`              | قائمة الأجهزة (مقسمة صفحات)                    |
 | PATCH   | `/api/devices/:id`          | تحديث جهاز (alias، pinned)                     |
@@ -567,4 +585,4 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 
 المصادقة: ترويسة `Authorization: Bearer <access_token>`.
 
-> لا تُشحن مواصفة OpenAPI مع v1.0.0 — الجدول أعلاه وأدلة القبول هي المرجع.
+> لا تُشحن مواصفة OpenAPI — الجدول أعلاه وأدلة القبول هي المرجع.

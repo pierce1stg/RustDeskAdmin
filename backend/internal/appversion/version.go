@@ -3,4 +3,4 @@
 // the git tag (without the leading "v").
 package appversion
 
-const Version = "1.0.0"
+const Version = "1.0.1"

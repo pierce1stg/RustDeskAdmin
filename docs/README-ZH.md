@@ -1,4 +1,4 @@
-# RustDesk Admin — v1.0.0
+# RustDesk Admin
 
 <p align="center">
   [<a href="../README.md">English</a>] | [<a href="README-RU.md">Русский</a>] | [<a href="README-AR.md">العربية</a>]<br>
@@ -92,7 +92,7 @@ RustDeskAdmin/
 
 | 服务     | 镜像                                        | 用途                                                 |
 |----------|---------------------------------------------|------------------------------------------------------|
-| postgres | postgres:16-alpine                           | 面板数据库（`./data/postgres`），启动时自动迁移      |
+| postgres | postgres:16-alpine                           | 面板数据库（`./data/postgres`），首次启动建表 + 懒检查补列      |
 | backend  | 自建（`backend/Dockerfile`，production 阶段） | REST API + WebSocket + presence 读取                 |
 | frontend | 自建（`frontend/Dockerfile`，production 阶段） | 管理界面（静态 nginx / SPA）                         |
 | nginx    | nginx:alpine                                 | HTTPS 面板、ACME webroot、WSS 21118/21119            |
@@ -112,6 +112,8 @@ RustDeskAdmin/
   apt update && apt install -y docker.io docker-compose-v2
   systemctl enable --now docker
   ```
+  （`setup.sh` 还需要宿主机上的 `openssl` 和 `curl`，缺失时会报错并提示安装方法；
+  已在 Ubuntu 22.04/24.04 验证。）
 - 一个指向本服务器的公网域名（DNS A 记录）。
 - 空闲 TCP 端口：`80`、`443`、`21115`–`21119`（外加 UDP `21116`、`21117`）；
   全部可通过 `.env` 重新映射（见下文）。
@@ -141,7 +143,7 @@ ufw enable
 ## 全新安装
 
 ```
-git clone https://github.com/pierce1stg/RustDeskAdmin.git
+git clone https://github.com/pierce1stg/RustDeskAdmin
 cd RustDeskAdmin
 
 cp .env.example .env
@@ -170,14 +172,14 @@ DEVICE_SECRET=$(openssl rand -base64 32)
 
 `setup.sh`（幂等）将：
 
-1. 如果 `POSTGRES_PASSWORD`、`JWT_SECRET`、`JWT_REFRESH_SECRET` 为空或为 `changeme`，
-   则自动生成；
+1. 如果 `POSTGRES_PASSWORD`、`JWT_SECRET`、`JWT_REFRESH_SECRET`、`DEVICE_SECRET`
+   为空或为 `changeme`，则自动生成；
 2. 创建 `data/` 和 `status/`；
 3. 将自签名占位证书放入 `data/certbot/etc/live/<DOMAIN>`，确保 nginx 始终以 TLS 启动；
 4. `docker compose up -d --build`；
 5. 等待 hbbs 创建 `data/hbbs/db_v2.sqlite3`；
 6. 通过端口 80 上的 HTTP-01 webroot 签发真实的 Let's Encrypt 证书
-   （`--cert-name <DOMAIN>`）并立即重载 nginx；
+   （`--cert-name <DOMAIN>-le`，之后 `live/<DOMAIN>` 符号链接到它）并立即重载 nginx；
 7. 输出摘要。
 
 随时可再次运行 `./setup.sh` 以（重新）构建、（重新）创建容器或（重新）签发证书。
@@ -201,11 +203,14 @@ DEVICE_SECRET=$(openssl rand -base64 32)
 | `POSTGRES_PASSWORD`  | Postgres 密码（若为 `changeme` 则自动生成）       |
 | `JWT_SECRET`         | API JWT 签名密钥（自动生成）                     |
 | `JWT_REFRESH_SECRET` | refresh 令牌签名密钥（自动生成）                 |
+| `DEVICE_SECRET`      | 设备密码存储密钥（自动生成；为空时经 JWT 回退读取旧数据） |
 
 ### Block B（一次性种子 —— 之后设置由面板接管）
 
 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`STATUS_REFRESH_INTERVAL`（30s）、
-`SERVER_DISPLAY_ADDRESS`（可选覆盖）、`RUSTDESK_PUBLIC_KEY`（可选；在新栈上
+`STATUS_REFRESH_MODE`（push）、`SERVER_DISPLAY_ADDRESS`（可选覆盖）、
+`RELAY_ADDRESS` / `RUSTDESK_API_SERVER`（Server Info 可选覆盖）、
+`RUSTDESK_PUBLIC_KEY`（可选；在新栈上
 hbbs 会在 `data/hbbs` 生成密钥）、`RUSTDESK_ID_PORT`、`RUSTDESK_RELAY_PORT`、
 `RUSTDESK_WS_PORT`、`ACCESS_TOKEN_TTL_MINUTES`（60）、`REFRESH_TOKEN_TTL_DAYS`（7）、
 `RUSTDESK_SERVER_VERSION`（1.1.16，hbbs/hbbr 的 compose 锁定）、`ALLOW_SERVER_UPDATE`
@@ -268,8 +273,9 @@ access 令牌为每次 API 调用把关；refresh 令牌维持浏览器会话并
 - 续期：`certbot` 容器每 12 小时运行一次 `certbot renew --quiet`；nginx 每 6 小时
   自动重载以获取新证书（certbot 内不使用 docker CLI）。
 
-`--cert-name <DOMAIN>` 使 certbot 写入 `data/certbot/etc/live/<DOMAIN>`，
-这正是 nginx 模板读取的位置。
+`--cert-name <DOMAIN>-le` 使 certbot 写入独立的
+`data/certbot/etc/live/<DOMAIN>-le` lineage，成功后 `live/<DOMAIN>`
+（nginx 模板读取的位置）符号链接到它。
 
 ---
 
@@ -415,7 +421,7 @@ APK_MIRROR=https://mirror.example.com/alpine
 
 ## 备份与迁移
 
-**所有状态都保存在 `rustdesk-stack/` 内：**
+**所有状态都保存在检出目录内（clone 后为 `RustDeskAdmin/`）：**
 
 - **服务器身份 + 设备**：`data/hbbs/`（务必保留 `id_ed25519*` 和 `db_v2.sqlite3*`）。
   只有不关心密钥/设备时才能全新安装。
@@ -427,14 +433,14 @@ APK_MIRROR=https://mirror.example.com/alpine
 ### 迁移到生产主机
 
 ```
-# 旧主机
+# 旧主机（检出目录内，如 ~/RustDeskAdmin）
 docker compose stop postgres
-mkdir -p ~/rustdesk-migrate && cp -a RustDeskAdmin/data ~/rustdesk-migrate/data
+mkdir -p ~/rustdesk-migrate && cp -a data ~/rustdesk-migrate/data
 tar czf ~/rustdesk-migrate/data.tgz -C ~/rustdesk-migrate data
 
 # 新主机
-git clone https://github.com/pierce1stg/RustDeskAdmin.git && cd RustDeskAdmin
-cp .env.example .env            # 设置 DOMAIN、EMAIL、相同的 POSTGRES_PASSWORD
+git clone https://github.com/pierce1stg/RustDeskAdmin && cd RustDeskAdmin
+cp .env.example .env            # 设置 DOMAIN、LETSENCRYPT_EMAIL、相同的 POSTGRES_PASSWORD
 mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 ./setup.sh
 ```
@@ -452,14 +458,22 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 面板支持从 GitHub 标签发行版自更新：
 
 1. **从面板（Settings → Panel update）**：检查最新**稳定** `vX.Y.Z` 发行版，下载经 SHA-256
-   校验的安装包，替换面板代码并运行 `./setup.sh`（约 1–3 分钟，保留数据和 `.env`，
-   失败时自动回滚）。更新仅在您点击更新按钮时执行——面板从不自动更新。
+   校验的安装包（失败重试 3 次），替换面板代码并运行 `./setup.sh`（约 1–3 分钟，保留数据和 `.env`，
+   失败时自动回滚）。启动前可见预检：安装包可达性、磁盘空间、运行器状态。运行期间卡片实时
+   显示运行器日志，状态/日志/备份会自动刷新（轮询 + 窗口聚焦时重取）；「刷新」按钮可
+   在不重载页面的情况下重拉全部数据。任何中断都会记录终止状态，卡住的状态可一键重置，
+   提示条可点叉关闭。成功的手动回滚显示为绿色（红色仅保留给真正失败并附带原因的情况）。
+   更新仅在您点击更新按钮时执行——面板从不自动更新。
    由 `ALLOW_PANEL_UPDATE` 控制（默认 `true`）。
 2. **手动**：拉取代码并重新运行幂等的引导脚本：
    ```
    git pull
    ./setup.sh        # 重建自定义镜像，保留 .env 和 data/
    ```
+3. **备份**：每次运行都会把上一版代码存为
+   `data/.panel-update-backups/pre-vX.Y.Z.tar.gz`。卡片中可见存放路径，支持一键回滚
+   到任意副本和删除；也可手动把自己的 `pre-vX.Y.Z.tar.gz` 放进去并点击刷新后回滚，
+   或用创建备份按钮随时为当前代码创建快照（`pre-vX.Y.Z-manual-<ts>.tar.gz`）。
 
 当前面板版本显示在侧边栏底部（`backend/internal/appversion/version.go`）。
 
@@ -517,6 +531,7 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 |--------|-----------------------------|-----------------------------------------------|
 | POST   | `/api/auth/login`           | 登录，返回 access+refresh JWT                 |
 | POST   | `/api/auth/refresh`         | 刷新 access 令牌                              |
+| POST   | `/api/auth/logout`          | 登出（幂等）                                  |
 | PUT    | `/api/auth/password`        | 修改管理员凭据（≥8 个字符）                   |
 | GET    | `/api/devices`              | 设备列表（分页）                              |
 | PATCH  | `/api/devices/:id`          | 更新设备（alias、pinned）                     |
@@ -537,4 +552,4 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 
 认证：请求头 `Authorization: Bearer <access_token>`。
 
-> v1.0.0 不附带 OpenAPI 规范——以上表格与验收指南即参考。
+> 不附带 OpenAPI 规范——以上表格与验收指南即参考。

@@ -372,6 +372,13 @@ func setupRouter(cfg Config, authService *auth.Service, deviceService *device.Se
 				panelUpdates.GET("/check", panelUpdater.HandleCheck)
 				panelUpdates.GET("/status", panelUpdater.HandleStatus)
 				panelUpdates.POST("/apply", panelUpdater.HandleApply)
+				panelUpdates.GET("/log", panelUpdater.HandleLog)
+				panelUpdates.POST("/reset", panelUpdater.HandleReset)
+				panelUpdates.GET("/backups", panelUpdater.HandleBackups)
+				panelUpdates.POST("/backups", panelUpdater.HandleCreateBackup)
+				panelUpdates.DELETE("/backups/:name", panelUpdater.HandleDeleteBackup)
+				panelUpdates.POST("/rollback", panelUpdater.HandleRollback)
+				panelUpdates.GET("/preflight", panelUpdater.HandlePreflight)
 			}
 
 			settingGroup := protected.Group("/settings")

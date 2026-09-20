@@ -1,4 +1,4 @@
-# RustDesk Admin — v1.0.0
+# RustDesk Admin
 
 <p align="center">
   [<a href="../README.md">English</a>] | [<a href="README-ZH.md">中文</a>] | [<a href="README-AR.md">العربية</a>]<br>
@@ -26,7 +26,7 @@ RustDeskAdmin/
 ├── backend/                   # Go admin API (компилируется в маленький prod-образ)
 ├── frontend/                  # React admin UI (статический nginx / SPA)
 ├── nginx/nginx.conf.template  # ${DOMAIN} + ACME webroot + WSS-терминация
-├── presence/Dockerfile        # паззер присутствия (docker.sock + nsenter)
+├── presence/Dockerfile        # поллер присутствия (docker.sock + nsenter)
 ├── scripts/presence.sh        # снимок живых соединений (namespace hbbs/hbbr)
 ├── data/                      # ЖИВЫЕ ДАННЫЕ - создаётся setup.sh:
 │   ├── hbbs/                  #   ключ hbbs/hbbr (id_ed25519) + БД устройств (sqlite)
@@ -101,7 +101,7 @@ RustDeskAdmin/
 
 | Сервис    | Образ                                                   | Назначение                                              |
 |-----------|---------------------------------------------------------|---------------------------------------------------------|
-| postgres  | postgres:16-alpine                                      | БД панели (`./data/postgres`), миграции при старте      |
+| postgres  | postgres:16-alpine                                      | БД панели (`./data/postgres`), схема при первом старте + ленивые проверки колонок |
 | backend   | собирается (`backend/Dockerfile`, prod stage)           | REST API + WebSocket + чтение присутствия               |
 | frontend  | собирается (`frontend/Dockerfile`, prod stage)          | админ-UI (статический nginx / SPA)                      |
 | nginx     | nginx:alpine                                            | HTTPS-панель, ACME webroot, WSS 21118/21119             |
@@ -122,6 +122,8 @@ RustDeskAdmin/
   apt update && apt install -y docker.io docker-compose-v2
   systemctl enable --now docker
   ```
+  (`setup.sh` также требует `openssl` и `curl` на хосте и останавливается
+  с подсказкой, если чего-то нет; проверено на Ubuntu 22.04/24.04.)
 - Публичный домен, указывающий (DNS A-запись) на этот сервер.
 - Свободные TCP-порты: `80`, `443`, `21115`–`21119` (+ UDP `21116`, `21117`);
   все перемапливаются через `.env` (см. ниже).
@@ -151,7 +153,7 @@ ufw enable
 ## Установка с нуля
 
 ```
-git clone https://github.com/pierce1stg/RustDeskAdmin.git
+git clone https://github.com/pierce1stg/RustDeskAdmin
 cd RustDeskAdmin
 cp .env.example .env
 # отредактируйте .env: DOMAIN=<ваш-домен>, LETSENCRYPT_EMAIL=<ваш-email>
@@ -182,15 +184,16 @@ DEVICE_SECRET=$(openssl rand -base64 32)
 
 `setup.sh` (идемпотентный) сделает:
 
-1. сгенерирует `POSTGRES_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, если они
-   пустые/`changeme`;
+1. сгенерирует `POSTGRES_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`,
+   `DEVICE_SECRET`, если они пустые/`changeme`;
 2. создаст `data/` и `status/`;
 3. положит самоподписанный плейсхолдер в `data/certbot/etc/live/<DOMAIN>`, чтобы
    nginx всегда стартовал с TLS;
 4. `docker compose up -d --build`;
 5. дождётся, пока hbbs создаст `data/hbbs/db_v2.sqlite3`;
 6. выпустит настоящий сертификат Let's Encrypt через HTTP-01 webroot на порту 80
-   (`--cert-name <DOMAIN>`) и сразу перезагрузит nginx;
+   (`--cert-name <DOMAIN>-le`, затем `live/<DOMAIN>` станет симлинком на него)
+   и сразу перезагрузит nginx;
 7. выведет сводку.
 
 Повторный запуск `./setup.sh` в любой момент: пересборка, пересоздание контейнеров,
@@ -215,11 +218,14 @@ Admin credentials). Пароль должен быть ≥8 символов (п
 | `POSTGRES_PASSWORD`  | пароль Postgres (автогенерация, если `changeme`)      |
 | `JWT_SECRET`         | секрет подписи JWT (автогенерация)                    |
 | `JWT_REFRESH_SECRET` | секрет refresh-токенов (автогенерация)                |
+| `DEVICE_SECRET`      | ключ хранения паролей устройств (автогенерация; пустой читает старые строки через JWT-фолбэк) |
 
 ### Блок B (разовые seeds — далее панель владеет настройками)
 
 `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `STATUS_REFRESH_INTERVAL` (30с),
-`SERVER_DISPLAY_ADDRESS` (опц. ручной адрес), `RUSTDESK_PUBLIC_KEY` (опц.; на
+`STATUS_REFRESH_MODE` (push), `SERVER_DISPLAY_ADDRESS` (опц. ручной адрес),
+`RELAY_ADDRESS` / `RUSTDESK_API_SERVER` (опц. переопределения Server Info),
+`RUSTDESK_PUBLIC_KEY` (опц.; на
 новом стеке hbbs генерирует ключ в `data/hbbs`), `RUSTDESK_ID_PORT`,
 `RUSTDESK_RELAY_PORT`, `RUSTDESK_WS_PORT`, `ACCESS_TOKEN_TTL_MINUTES` (60),
 `REFRESH_TOKEN_TTL_DAYS` (7), `RUSTDESK_SERVER_VERSION` (1.1.16, пин compose для
@@ -287,8 +293,9 @@ Access-токен закрывает каждый API-запрос; refresh-то
   nginx сам перезагружается каждые 6ч, чтобы подхватить новые серты (без docker CLI
   внутри certbot).
 
-Флаг `--cert-name <DOMAIN>` заставляет certbot писать в
-`data/certbot/etc/live/<DOMAIN>` — именно этот путь читает nginx-шаблон.
+Флаг `--cert-name <DOMAIN>-le` заставляет certbot писать в отдельную lineage
+`data/certbot/etc/live/<DOMAIN>-le`; при успехе `live/<DOMAIN>` (его и читает
+nginx-шаблон) становится симлинком на неё.
 
 ---
 
@@ -452,7 +459,7 @@ APK_MIRROR=https://mirror.example.com/alpine
 
 ## Резервное копирование и миграция
 
-**Всё состояние хранится внутри `rustdesk-stack/`:**
+**Всё состояние хранится внутри каталога чекаута (`RustDeskAdmin/` после clone):**
 
 - **Идентичность сервера + устройства**: `data/hbbs/` (обязательно сохраните
   `id_ed25519*` и `db_v2.sqlite3*`). Свежие только если не нужны ключ/устройства.
@@ -464,14 +471,14 @@ APK_MIRROR=https://mirror.example.com/alpine
 ### Перенос на продакшен-хост
 
 ```
-# старый хост
+# старый хост (внутри чекаута, напр. ~/RustDeskAdmin)
 docker compose stop postgres
-mkdir -p ~/rustdesk-migrate && cp -a rustdesk-stack/data ~/rustdesk-migrate/data
+mkdir -p ~/rustdesk-migrate && cp -a data ~/rustdesk-migrate/data
 tar czf ~/rustdesk-migrate/data.tgz -C ~/rustdesk-migrate data
 
 # новый хост
-git clone https://github.com/pierce1stg/RustDeskAdmin.git && cd RustDeskAdmin
-cp .env.example .env            # DOMAIN, EMAIL, тот же POSTGRES_PASSWORD
+git clone https://github.com/pierce1stg/RustDeskAdmin && cd RustDeskAdmin
+cp .env.example .env            # DOMAIN, LETSENCRYPT_EMAIL, тот же POSTGRES_PASSWORD
 mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 ./setup.sh
 ```
@@ -489,16 +496,28 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 Панель умеет обновляться сама из тегированного релиза на GitHub:
 
 1. **Из панели (Settings → Panel update)**: проверяется последний **стабильный**
-   релиз `vX.Y.Z`, скачивается проверенный по контрольной сумме бандл, код
-   панели заменяется и выполняется `./setup.sh` (~1–3 мин; данные и `.env`
-   сохраняются, при сбое — автоматический откат). Обновление запускается
-   только нажатием кнопки — сама панель никогда не обновляется автоматически.
-   Управляется `ALLOW_PANEL_UPDATE` (по умолчанию `true`).
+   релиз `vX.Y.Z`, скачивается проверенный по контрольной сумме бандл (3 попытки),
+   код панели заменяется и выполняется `./setup.sh` (~1–3 мин; данные и `.env`
+   сохраняются, при сбое — автоматический откат). Перед стартом видна проверка:
+    доступность бандла, место на диске, занятость раннера. Во время работы карточка
+    стримит живой журнал раннера, а статус/журнал/копии обновляются сами (опрос +
+    обновление при фокусе окна); кнопка «Обновить» перетягивает всё без перезагрузки
+    страницы. Любой обрыв фиксирует терминальное состояние, залипший статус
+    сбрасывается кнопкой, баннеры закрываются крестиком. Успешный ручной откат
+    показывается зелёным (красный — только для настоящих падений с сохранённой
+    причиной). Обновление запускается
+    только нажатием кнопки — сама панель никогда не обновляется автоматически.
+    Управляется `ALLOW_PANEL_UPDATE` (по умолчанию `true`).
 2. **Вручную**: скачайте код и перезапустите идемпотентный bootstrap:
-   ```
-   git pull
-   ./setup.sh        # пересобирает кастомные образы, сохраняя .env и data/
-   ```
+    ```
+    git pull
+    ./setup.sh        # пересобирает кастомные образы, сохраняя .env и data/
+    ```
+3. **Копии**: каждый прогон складывает предыдущее дерево в
+    `data/.panel-update-backups/pre-vX.Y.Z.tar.gz`. В карточке видны путь хранения,
+    откат в один клик и удаление; свой `pre-vX.Y.Z.tar.gz` можно подложить туда
+    вручную и нажать «Обновить», а текущий код — снять кнопкой создания копии
+    (`pre-vX.Y.Z-manual-<ts>.tar.gz`).
 
 Текущая версия панели показана в футере
 (`backend/internal/appversion/version.go`).
@@ -563,6 +582,7 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 |-------|----------------------|---------------------------------------------------|
 | POST  | `/api/auth/login`    | вход, выдаёт access+refresh JWT                   |
 | POST  | `/api/auth/refresh`  | обновление access-токена                          |
+| POST  | `/api/auth/logout`   | выход (идемпотентный)                             |
 | PUT   | `/api/auth/password` | смена учётных данных админа (≥8 символов)         |
 | GET   | `/api/devices`       | список устройств (пагинация)                      |
 | PATCH | `/api/devices/:id`   | обновление устройства (alias, pinned)             |
@@ -583,4 +603,4 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 
 Авторизация: заголовок `Authorization: Bearer <access_token>`.
 
-> OpenAPI-спецификации в v1.0.0 нет — эталоном служат таблица выше и гайды приёмки.
+> OpenAPI-спецификации нет — эталоном служат таблица выше и гайды приёмки.

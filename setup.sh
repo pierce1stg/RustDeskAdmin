@@ -16,6 +16,83 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
+# Validate .env BEFORE sourcing it: an unquoted value with spaces (e.g.
+# WEB_CLIENT_NAME=My Panel) makes bash run the tail as a command
+# ("Browser: command not found") and set -e kills the whole install/update.
+# Fails fast with file + line number instead of cryptic fallout.
+validate_env() {
+    # Byte-wise patterns: bracket ranges like [A-Za-z] misbehave under UTF-8
+    # locales (ru_RU and friends), so pin C locale for this function only
+    # (restored on return; children like sed inherit it).
+    local LC_ALL=C
+    export LC_ALL
+    local file="$1" line='' trimmed='' body='' val='' no=0 bad=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        no=$((no + 1))
+        trimmed=$(printf '%s' "$line" | sed 's/^[[:space:]]*//')
+        case "$trimmed" in
+            ''|\#*) continue ;;
+        esac
+        body=${trimmed#export }
+        body=$(printf '%s' "$body" | sed 's/^[[:space:]]*//')
+        # NOTE: key check uses [[ =~ ]], not case globs: adjacent bracket
+        # classes with a trailing star ([A-Z][A-Z]*) silently never match
+        # on this stack's bash/locale combo. Regex engine is unaffected.
+        keyre='^[A-Za-z_][A-Za-z0-9_]*='
+        if [[ ! $body =~ $keyre ]]; then
+            echo "[setup] ERROR: $file line $no is not KEY=value: $trimmed" >&2
+            bad=1
+            continue
+        fi
+        val=${body#*=}
+        case "$val" in
+            ''|\"*\"|\'*\'*) continue ;; # empty or quoted — safe to source
+        esac
+        # A trailing " # comment" is legal bash (used all over .env.example):
+        # strip it (and plain trailing whitespace) before checking the value.
+        val=$(printf '%s' "$val" | sed -e 's/[[:space:]][[:space:]]*#.*$//' -e 's/[[:space:]]*$//')
+        case "$val" in
+            '' ) continue ;;
+            *[[:space:]\$\"\`\\]*)
+                echo "[setup] ERROR: $file line $no has an unquoted value with spaces/specials." >&2
+                echo "[setup]        wrap the value in quotes: KEY=\"value with spaces\"" >&2
+                bad=1
+                ;;
+            *\ #*)
+                echo "[setup] ERROR: $file line $no has an unquoted ' #' (would be cut as a comment)." >&2
+                echo "[setup]        wrap the value in quotes." >&2
+                bad=1
+                ;;
+        esac
+    done < "$file"
+    [ "$bad" = "0" ]
+}
+validate_env "$ENV_FILE" || exit 1
+
+# Fail fast on missing host tools with an actionable hint instead of a
+# cryptic "command not found" halfway through the install. Placed after the
+# .env bootstrap above so the very first run still creates .env from the
+# example even on a bare machine.
+require_cmd() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "[setup] ERROR: required tool '$1' is not installed. $2" >&2
+        exit 1
+    fi
+}
+require_cmd openssl "install it (Ubuntu/Debian: apt install -y openssl)."
+require_cmd curl "install it (Ubuntu/Debian: apt install -y curl)."
+require_cmd docker "install Docker Engine + Compose v2 (Ubuntu/Debian: apt install -y docker.io docker-compose-v2 && systemctl enable --now docker)."
+if ! docker compose version >/dev/null 2>&1; then
+    echo "[setup] ERROR: 'docker compose' (Compose v2 plugin) is missing." >&2
+    echo "[setup] Install it (Ubuntu/Debian: apt install -y docker-compose-v2)." >&2
+    exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+    echo "[setup] ERROR: docker daemon is not reachable." >&2
+    echo "[setup] Start it (systemctl enable --now docker) and make sure this user can access /var/run/docker.sock." >&2
+    exit 1
+fi
+
 gen_secret() {
     openssl rand -base64 32 | tr -d '=+/' | head -c 40
 }
@@ -50,7 +127,7 @@ fi
 
 echo "[setup] DOMAIN=$DOMAIN  EMAIL=${LETSENCRYPT_EMAIL:-<none>}"
 
-mkdir -p data/hbbs data/postgres data/screenshots data/certbot/etc data/certbot/www status
+mkdir -p data/hbbs data/postgres data/screenshots data/certbot/etc data/certbot/www status data/.panel-update-backups
 
 # Self-signed placeholder so nginx can always receive a TLS certificate at boot.
 # It is a plain directory holding a real self-signed cert - never a certbot lineage -
@@ -71,7 +148,7 @@ echo "[setup] starting stack (first build may take a while)..."
 docker compose up -d --build
 
 # hbbs creates ./data/hbbs/db_v2.sqlite3 on first start; backend needs it
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     [ -f data/hbbs/db_v2.sqlite3 ] && break
     sleep 1
 done
@@ -100,7 +177,7 @@ if [ -n "${LETSENCRYPT_EMAIL:-}" ] && cert_is_placeholder; then
         # Wait until nginx answers on port 80: the ACME webroot challenge must be
         # reachable, so issuing while nginx is (re)starting would only waste attempts.
         ready=0
-        for i in $(seq 1 30); do
+        for _ in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
                 "http://127.0.0.1/__health" 2>/dev/null || true)
             if [ "$code" = "200" ]; then ready=1; break; fi
@@ -161,7 +238,7 @@ else
     echo "Admin console : https://$DOMAIN:$HTTPS_PORT_VAL"
 fi
 echo "RustDesk ID    : $DOMAIN:${ID_PORT:-21116}  / relay: ${RELAY_PORT:-21117}"
-echo "Keys in        : $CERT_DIR"
+echo "Certs in       : $CERT_DIR"
 echo "[setup] hint: pairwise admin credentials were seeded as ADMIN_USERNAME/ADMIN_PASSWORD; change them in the panel."
 
 # Optional docker cleanup to keep the disk lean (see Block D in .env).

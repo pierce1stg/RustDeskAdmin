@@ -97,6 +97,13 @@ services:
       - ./data/hbbs:/data:ro
       - ./data/screenshots:/screenshots
       - ./status:/var/run/rustdesk:ro
+      # Update backups (list/delete via panel). Separate top-level mount
+      # (NOT nested under /var/run/rustdesk: the parent is :ro and Docker
+      # cannot create mountpoints inside a read-only bind).
+      # Read-write so chosen backups can be deleted from the UI; names are
+      # strictly validated server-side. No new privilege: the backend
+      # already holds docker.sock.
+      - ./data/.panel-update-backups:/backups:rw
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       # Loopback-only: the panel goes through nginx:443. Publishing the API

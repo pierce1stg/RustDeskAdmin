@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
-import { Server, RefreshCw, ShieldCheck, Languages, Download, Check, Clock, Rocket, MonitorSmartphone, MessageCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { Server, RefreshCw, X, ShieldCheck, Languages, Download, Check, Clock, Rocket, MonitorSmartphone, MessageCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import {
   useSettings,
   useUpdateSetting,
@@ -65,8 +65,17 @@ import {
   usePanelUpdateCheck,
   usePanelUpdateStatus,
   useApplyPanelUpdate,
+  usePanelUpdateLog,
+  useResetPanelUpdate,
+  usePanelBackups,
+  useRollbackPanel,
+  useDeleteBackup,
+  useCreateBackup,
+  usePanelPreflight,
   PANEL_ACTIVE_PHASES,
+  isFailedRollback,
 } from '@/api/panel'
+import { formatBackupSize, formatBackupTime } from '@/lib/format'
 import { SUPPORTED_LANGS, LANGUAGE_LABELS, changeAppLanguage } from '@/i18n'
 import i18n from '@/i18n'
 import { loadOpenIds, saveOpenIds, toggleOpenId } from '@/lib/settingsCollapse'
@@ -384,13 +393,138 @@ function PanelUpdatesCard() {
   const { toast } = useToast()
   const { data: check, refetch, isFetching, isError } = usePanelUpdateCheck(true)
   const apply = useApplyPanelUpdate()
-  const { data: status } = usePanelUpdateStatus(apply.isPending)
+  const { data: status, refetch: refetchStatus, isFetching: statusFetching } = usePanelUpdateStatus(apply.isPending)
   const [confirm, setConfirm] = useState(false)
 
   const phase = status?.phase ?? 'idle'
   const active = PANEL_ACTIVE_PHASES.includes(phase)
   const hasUpdate = check?.update_available
   const enabled = check?.enabled !== false
+  const failedRollback = isFailedRollback(status)
+  const showTerminalBanner = phase === 'error' || phase === 'rolled_back'
+
+  // Live runner log (polls while active or stuck in error) + autoscroll to the tail.
+  const { data: logData, refetch: refetchLog, isFetching: logFetching } = usePanelUpdateLog(active || phase === 'error')
+  const logLines = logData?.lines ?? []
+  const logRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const el = logRef.current
+    if (el && active) el.scrollTop = el.scrollHeight
+  }, [logLines.length, active])
+
+  // Resetting a stuck state (no runner behind it). Shown for any non-idle
+  // phase: clearing a terminal status/log is harmless (the backend refuses
+  // with 409 while a runner exists) and returns the card to a clean slate.
+  const resetUpdate = useResetPanelUpdate()
+  const showReset = phase !== 'idle'
+  const handleReset = async () => {
+    try {
+      await resetUpdate.mutateAsync()
+      toast({ title: t('settings.panelResetDone'), variant: 'success' })
+    } catch (error) {
+      toast({ title: t('settings.panelResetFailed'), description: apiErrorText(error), variant: 'destructive' })
+    }
+  }
+
+  // Backups: list, two-click rollback to a chosen one, two-click delete.
+  const { data: backupsData, refetch: refetchBackups, isFetching: backupsFetching } = usePanelBackups(true)
+  const backups = backupsData?.backups ?? []
+  const rollbackUpdate = useRollbackPanel()
+  const deleteBackup = useDeleteBackup()
+  const [confirmTarget, setConfirmTarget] = useState<{ kind: 'rollback' | 'delete'; name: string } | null>(null)
+  const handleRollback = async (name: string) => {
+    try {
+      await rollbackUpdate.mutateAsync(name)
+      setConfirmTarget(null)
+      toast({ title: t('settings.panelRollbackAccepted'), variant: 'success' })
+    } catch (error) {
+      toast({ title: t('settings.panelRollbackFailed'), description: apiErrorText(error), variant: 'destructive' })
+    }
+  }
+  const handleDeleteBackup = async (name: string) => {
+    try {
+      await deleteBackup.mutateAsync(name)
+      setConfirmTarget(null)
+      toast({ title: t('settings.panelBackupDeleted'), variant: 'success' })
+    } catch (error) {
+      toast({ title: t('settings.panelBackupDeleteFailed'), description: apiErrorText(error), variant: 'destructive' })
+    }
+  }
+
+  // Manual snapshot: accepted instantly, the runner tars async — poll the
+  // list until the new copy shows up, then confirm.
+  const createBackup = useCreateBackup()
+  const handleCreateBackup = async () => {
+    try {
+      const res = await createBackup.mutateAsync()
+      const name = res.backup
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 2000))
+        const fresh = await refetchBackups()
+        if ((fresh.data?.backups ?? []).some((b) => b.name === name)) {
+          toast({ title: t('settings.panelBackupDone'), description: name, variant: 'success' })
+          return
+        }
+      }
+      toast({ title: t('settings.panelBackupPending'), description: name, variant: 'default' })
+    } catch (error) {
+      toast({ title: t('settings.panelBackupFailed'), description: apiErrorText(error), variant: 'destructive' })
+    }
+  }
+
+  // Preflight (only interesting while an update is offered, and for a while
+  // after a run — terminal phases persist until the next run or a reset).
+  const showPreflight =
+    !!hasUpdate || active || phase === 'ok' || phase === 'rolled_back' || phase === 'error'
+  const { data: preflight, refetch: refetchPreflight } = usePanelPreflight(showPreflight)
+
+  // Manual refresh: pulls status + log + backups (+ preflight when shown)
+  // without reloading the page.
+  const refreshing = statusFetching || logFetching || backupsFetching
+  const handleRefresh = async () => {
+    await Promise.allSettled([refetchStatus(), refetchLog(), refetchBackups(), refetchPreflight()])
+  }
+
+  // Terminal banner dismissal (remembered per run, so a dismissed banner
+  // stays hidden across page reloads until the next run or a reset).
+  const bannerId = `${phase}:${status?.finished_at ?? status?.started_at ?? ''}`
+  const [dismissedBanner, setDismissedBanner] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem('rd-panel-banner-dismissed')
+    } catch {
+      return null
+    }
+  })
+  const dismissBanner = () => {
+    try {
+      sessionStorage.setItem('rd-panel-banner-dismissed', bannerId)
+    } catch {
+      /* storage unavailable — hide for this mount only */
+    }
+    setDismissedBanner(bannerId)
+  }
+
+  // Toasts on terminal transitions (tracked across polls).
+  const prevPhaseRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const prev = prevPhaseRef.current
+    prevPhaseRef.current = phase
+    if (!phase || phase === prev) return
+    if (phase === 'ok') {
+      toast({ title: t('settings.panelToastOk'), variant: 'success' })
+    } else if (phase === 'rolled_back') {
+      // Auto-rollback after a failure keeps the cause in status.error;
+      // a clean manual rollback has none — different tone.
+      if (status?.error) {
+        toast({ title: t('settings.panelToastRolledBack'), description: status.error, variant: 'default' })
+      } else {
+        toast({ title: t('settings.panelToastRolledBackManual'), variant: 'success' })
+      }
+    } else if (phase === 'error') {
+      toast({ title: t('settings.panelToastError'), description: status?.error, variant: 'destructive' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase])
 
   const phaseLabel = (p: string) => {
     switch (p) {
@@ -468,10 +602,184 @@ function PanelUpdatesCard() {
           </div>
         )}
 
-        {(phase === 'rolled_back' || phase === 'error') && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-200 px-4 py-3 text-sm text-red-600 dark:border-red-900 dark:text-red-400">
-            {phaseLabel(phase)}
-            {status?.error && <span className="font-mono text-xs">{status.error}</span>}
+        {showTerminalBanner && dismissedBanner !== bannerId && (
+          phase === 'rolled_back' && !failedRollback ? (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-green-200 px-4 py-3 text-sm text-green-700 dark:border-green-900 dark:text-green-400">
+              <span className="flex-1">{t('settings.panelPhaseRolledBackManual')}</span>
+              <Button size="sm" variant="ghost" onClick={dismissBanner} title={t('settings.panelBannerHide')}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-200 px-4 py-3 text-sm text-red-600 dark:border-red-900 dark:text-red-400">
+              <span className="flex-1">
+                {phaseLabel(phase)}
+                {status?.error && <span className="font-mono text-xs"> {status.error}</span>}
+              </span>
+              <Button size="sm" variant="ghost" onClick={dismissBanner} title={t('settings.panelBannerHide')}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          )
+        )}
+
+        {(active || logLines.length > 0) && (
+          <div className="space-y-2 rounded-lg border px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-medium">{t('settings.panelLogTitle')}</span>
+              <span className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleRefresh}
+                  disabled={refreshing}
+                  title={t('settings.panelRefreshHint')}
+                >
+                  <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+                  {t('settings.panelRefresh')}
+                </Button>
+                {showReset && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleReset}
+                    disabled={resetUpdate.isPending}
+                    title={t('settings.panelResetHint')}
+                  >
+                    {t('settings.panelResetState')}
+                  </Button>
+                )}
+              </span>
+            </div>
+            <div
+              ref={logRef}
+              className="max-h-48 overflow-y-auto font-mono text-[11px] leading-relaxed text-muted-foreground"
+            >
+              {logLines.length === 0 ? (
+                <p>{t('settings.panelLogEmpty')}</p>
+              ) : (
+                logLines.map((line, i) => <p key={i} className="whitespace-pre-wrap break-all">{line}</p>)
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-2 rounded-lg border px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-medium">{t('settings.panelBackupsTitle')}</span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleCreateBackup}
+              disabled={active || createBackup.isPending}
+              title={t('settings.panelBackupCreateHint')}
+            >
+              {createBackup.isPending ? t('settings.panelPhaseWorking') : t('settings.panelBackupCreate')}
+            </Button>
+          </div>
+          {backups.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{t('settings.panelBackupsEmpty')}</p>
+          ) : (
+            backups.map((b) => (
+              <div
+                key={b.name}
+                className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-1"
+              >
+                <div className="min-w-0 flex-1 basis-48">
+                  <div className="truncate font-mono text-[11px]" title={b.name}>
+                    {b.name}
+                  </div>
+                  <div
+                    className="mt-0.5 font-mono text-[11px] text-muted-foreground"
+                    title={b.created_at}
+                  >
+                    {formatBackupTime(b.created_at)} · {formatBackupSize(b.size_bytes)}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {confirmTarget?.name === b.name ? (
+                    <>
+                      <span className="text-xs text-muted-foreground">
+                        {confirmTarget.kind === 'rollback'
+                          ? t('settings.panelRollbackSure')
+                          : t('settings.panelDeleteSure')}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant={confirmTarget.kind === 'rollback' ? 'destructive' : 'outline'}
+                        disabled={rollbackUpdate.isPending || deleteBackup.isPending}
+                        onClick={() =>
+                          confirmTarget.kind === 'rollback'
+                            ? handleRollback(b.name)
+                            : handleDeleteBackup(b.name)
+                        }
+                      >
+                        {t('settings.panelConfirmYes')}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmTarget(null)}>
+                        {t('common.cancel')}
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={active || rollbackUpdate.isPending}
+                        title={t('settings.panelRollbackHint')}
+                        onClick={() => setConfirmTarget({ kind: 'rollback', name: b.name })}
+                      >
+                        {t('settings.panelRollback')}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={deleteBackup.isPending}
+                        onClick={() => setConfirmTarget({ kind: 'delete', name: b.name })}
+                      >
+                        {t('settings.panelDelete')}
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+          <p className="text-xs text-muted-foreground">
+            {t('settings.panelBackupsPath', { path: 'data/.panel-update-backups' })}
+          </p>
+        </div>
+
+        {showPreflight && preflight && (
+          <div className="space-y-1 rounded-lg border px-4 py-3 text-xs text-muted-foreground">
+            <span className="text-sm font-medium text-foreground">{t('settings.panelPreflightTitle')}</span>
+            <p>
+              {t('settings.panelPreflightAsset')}:{' '}
+              {preflight.asset_reachable ? (
+                <span className="font-mono">
+                  {formatBackupSize(preflight.asset_bytes)} <Check className="inline h-3 w-3 text-green-600" />
+                </span>
+              ) : (
+                <span className="text-red-600 dark:text-red-400">{t('settings.panelPreflightNo')}</span>
+              )}
+            </p>
+            <p>
+              {t('settings.panelPreflightDisk')}:{' '}
+              <span className="font-mono">{formatBackupSize(preflight.disk_free_bytes)}</span>{' '}
+              {preflight.disk_ok ? (
+                <Check className="inline h-3 w-3 text-green-600" />
+              ) : (
+                <span className="text-red-600 dark:text-red-400">{t('settings.panelPreflightLow')}</span>
+              )}
+            </p>
+            <p>
+              {t('settings.panelPreflightRunner')}:{' '}
+              {preflight.runner_free ? (
+                <Check className="inline h-3 w-3 text-green-600" />
+              ) : (
+                <span className="text-red-600 dark:text-red-400">{t('settings.panelPreflightBusy')}</span>
+              )}
+            </p>
           </div>
         )}
 
