@@ -34,6 +34,7 @@ type Config struct {
 	DeviceSecret       string
 	HBBDBPath          string
 	HBBPresencePath    string
+	HBBOnlineAddr      string
 	ServerPort         string
 	GinMode            string
 	AllowServerUpdates bool
@@ -87,7 +88,7 @@ func main() {
 	if deviceSecret == "" {
 		deviceSecret = cfg.JWTSecret
 	}
-	deviceService := device.NewService(pool, cfg.HBBDBPath, cfg.HBBPresencePath, deviceSecret, settingsStore, logger, cfg.JWTSecret)
+	deviceService := device.NewService(pool, cfg.HBBDBPath, cfg.HBBPresencePath, deviceSecret, settingsStore, logger, cfg.HBBOnlineAddr, cfg.JWTSecret)
 
 	// Apply the device-password schema once at bootstrap instead of lazily on
 	// request hot paths (a read-only DB role would fail every GET otherwise).
@@ -155,6 +156,7 @@ func loadConfig() Config {
 		DeviceSecret:       getEnv("DEVICE_SECRET", ""),
 		HBBDBPath:          getEnv("HBB_DB_PATH", "/data/rustdesk/db_v2.sqlite3"),
 		HBBPresencePath:    getEnv("HBB_PRESENCE_PATH", "/var/run/presence.json"),
+		HBBOnlineAddr:      getEnv("HBB_ONLINE_ADDR", "hbbs:21115"),
 		ServerPort:         getEnv("SERVER_PORT", "8080"),
 		GinMode:            getEnv("GIN_MODE", "debug"),
 		AllowServerUpdates: getEnv("ALLOW_SERVER_UPDATE", "true") != "false",

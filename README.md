@@ -78,19 +78,24 @@ RustDeskAdmin/
 - **Web admin console** (React SPA + Go API):
   - Dashboard — server status summary, live presence.
   - Devices — list of registered devices (`GET /api/devices`), PeerInfo columns
-    (host/user/OS/version/displays), search, pin/alias, encrypted saved
-    passwords, view details, delete.
+    (host/user/OS/version/displays), search across all fields with a field
+    picker (contains/exact/starts per column, decimal IDs included),
+    pin/alias, encrypted saved passwords, view details, delete. The status
+    dot is tri-state: on, off, or uncertain (shared/unclear source).
   - Settings — collapsible sections (state kept per browser), panel settings
     (seeded from `.env`, then owned by the DB); session lifetime, web-client
     defaults, chat system messages and client display name are configurable here.
   - Login = JWT access + refresh tokens with server-stored sessions; sessions
     are rotated and pruned as refresh tokens expire; change admin credentials.
-- **Live presence** (`presence` container):
+- **Live presence** (`presence` container + backend verdict):
   - reads real hbbs/hbbr connections directly from their network namespaces
-    (nsenter + `ss` + docker.sock);
+    (nsenter + `ss` + docker.sock), with per-socket traffic freshness;
   - writes `status/presence.json` with active peer IPs, listening-port state, and
     peer→IP bindings;
-  - status is also aggregated by the backend and exposed via `/api/status`.
+  - the backend additionally asks hbbs itself (same `OnlineRequest` the native
+    clients use) for the authoritative per-peer online bitmask, so shared NATs
+    can never confuse peers (`HBB_ONLINE_ADDR`, default `hbbs:21115`);
+  - status is aggregated by the backend and exposed via `/api/status`.
 - **RustDesk server**: hbbs (ID) + hbbr (relay) from the official
   `rustdesk/rustdesk-server:1.1.16` image; key and device DB live in `data/hbbs/`.
 - **Zero-config TLS**: self-managed Let's Encrypt (webroot), auto-renew every 12h,
@@ -505,9 +510,11 @@ The panel can update itself from a tagged GitHub release:
     space and runner state. While a run is active the card streams the runner
     log and keeps status/log/backups fresh on its own (polling + refetch on
     window focus); a manual Refresh button re-pulls everything without a page
-    reload. Every exit path (including crashes) records a terminal state — a
-    stuck status can be reset from the UI, and terminal banners can be
-    dismissed. A successful manual rollback shows a green confirmation, not a
+    reload. Every exit path (including crashes) records a terminal state — the
+    Reset button is available for any non-idle state and clears status + log,
+    terminal banners can be dismissed, and toasts fire only on fresh
+    transitions (revisiting an old state stays quiet). A successful manual
+    rollback shows a green confirmation, not a
     red failure (red is reserved for real failures with the kept cause).
     Updates only run when you press the Update button — the panel never
     updates itself automatically. Gated by
@@ -589,7 +596,7 @@ pin for the version you actually want to keep running.
 | POST   | `/api/auth/refresh`  | refresh the access token                     |
 | POST   | `/api/auth/logout`   | revoke one refresh session (idempotent)      |
 | PUT    | `/api/auth/password` | change admin credentials (≥8 chars)          |
-| GET    | `/api/devices`       | list devices (paginated)                     |
+| GET    | `/api/devices`       | list devices (paginated; `search`, `fields`, `ops`) |
 | PATCH  | `/api/devices/:id`   | update a device (alias, pinned)              |
 | DELETE | `/api/devices/:id`   | delete a device                              |
 | GET    | `/api/devices/:id/password` | saved-password state (never the secret) |

@@ -46,6 +46,15 @@ Everything below needs human eyes / real devices.
       rollback to it and deletion work like automatic copies.
 - [ ] Reset button visible for any non-idle phase (incl. terminal ok/rolled_back/error);
       reset clears status + log and returns the card to a clean slate.
+- [ ] Revisiting a terminal update state fires no toast; pressing Update and
+      waiting for the finish still toasts once.
+- [ ] Devices search: decimal ID finds the peer; field picker popover opens
+      next to the button (no backdrop), per-field contains/exact/starts work,
+      choice persists across reload.
+- [ ] Status dot tri-state: green = certain online (hbbs heartbeat / fresh
+      socket), yellow = uncertain (shared/unknown/stale), grey = offline.
+- [ ] Server card: ghost sockets dimmed with tooltip, counts cover active
+      sockets only; shared-IP conns name distinct peers, no duplicates.
 
 ## Telemetry to attach to bug reports
 Session journal (`Terminal` button) + `browser codecs:` line + stats row

@@ -12,6 +12,9 @@ export interface Device {
   last_seen: string | null
   online: boolean
   password_saved: boolean
+  // Why the peer is flagged online ("conn:<ip>" / "grace:<rfc3339>");
+  // null when offline or unknown (e.g. right after a backend restart).
+  online_source: string | null
   created_at: string
   updated_at: string
   // Last-known PeerInfo snapshot (NULL until the first panel connect).
@@ -27,6 +30,8 @@ export interface ListDevicesParams {
   page?: number
   limit?: number
   search?: string
+  fields?: string
+  ops?: string
   pinned?: boolean
   online?: boolean
 }

@@ -6,6 +6,7 @@ export interface ServerStatusConn {
   port?: number
   peer_id?: string
   alias?: string
+  stale?: boolean
 }
 
 export interface ServerStatus {

@@ -15,9 +15,6 @@ const navigation = [
   { nameKey: 'nav.settings', href: '/settings', icon: Settings },
 ]
 
-const LOGO_FONT =
-  "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
-
 export function Sidebar() {
   const { t } = useTranslation()
   const { logout } = useAuthStore()
@@ -48,40 +45,32 @@ export function Sidebar() {
         )}
       >
         <div className="flex h-16 items-center justify-between px-4">
-          {!compact && (
+          {compact ? (
             <NavLink
               to="/"
               onClick={() => setMobileOpen(false)}
-              className="flex min-w-0 flex-1 items-center text-primary"
+              className="flex items-center justify-center"
               aria-label={t('nav.logoLabel')}
             >
-              <svg
-                className="logo-emboss h-9 w-full min-w-0"
-                viewBox="0 0 200 32"
-                preserveAspectRatio="xMidYMid meet"
-                role="img"
-                aria-label={t('nav.logoLabel')}
-              >
-                <defs>
-                  <linearGradient id="logo-grad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0" stopColor="currentColor" stopOpacity="0.5" />
-                    <stop offset="0.45" stopColor="currentColor" />
-                    <stop offset="1" stopColor="currentColor" stopOpacity="0.75" />
-                  </linearGradient>
-                </defs>
-                <text
-                  x="2"
-                  y="24.5"
-                  textAnchor="start"
-                  fill="url(#logo-grad)"
-                  fontSize="18.5"
-                  fontWeight="800"
-                  letterSpacing="0.5"
-                  fontFamily={LOGO_FONT}
-                >
-                  {t('nav.logoLabel')}
-                </text>
-              </svg>
+              <img src="/favicon.svg" alt="" className="logo-emboss h-11 w-11 rounded-[12px]" />
+            </NavLink>
+          ) : (
+            <NavLink
+              to="/"
+              onClick={() => setMobileOpen(false)}
+              className="flex min-w-0 flex-1 items-center gap-2.5"
+              aria-label={t('nav.logoLabel')}
+            >
+              <img src="/favicon.svg" alt="" className="logo-emboss h-11 w-11 shrink-0 rounded-[12px]" />
+              <span className="flex min-w-0 flex-col leading-none">
+                <span className="truncate text-[19px] font-extrabold tracking-tight drop-shadow-sm">
+                  <span className="text-foreground">Rust</span>
+                  <span className="text-primary">Desk</span>
+                </span>
+                <span className="mt-1 truncate text-[11px] font-medium tracking-wide text-muted-foreground">
+                  admin panel
+                </span>
+              </span>
             </NavLink>
           )}
 

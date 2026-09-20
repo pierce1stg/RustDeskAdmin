@@ -280,7 +280,8 @@ function ServerConnRow({
   conns: ServerStatusConn[]
   emptyLabel: string
 }) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(false);
+  const { t } = useTranslation()
 
   return (
     <div className="neu-panel overflow-hidden">
@@ -317,7 +318,11 @@ function ServerConnRow({
             conns.map((conn, idx) => (
               <div
                 key={`${conn.ip}-${conn.port ?? ''}-${idx}`}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-md px-2 py-1 hover:bg-muted/40"
+                className={cn(
+                  'flex flex-wrap items-center justify-between gap-2 rounded-md px-2 py-1 hover:bg-muted/40',
+                  conn.stale && 'opacity-60'
+                )}
+                title={conn.stale ? t('dash.connStaleHint') : undefined}
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="truncate text-sm">{conn.alias || conn.peer_id || conn.ip}</span>

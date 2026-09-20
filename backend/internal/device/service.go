@@ -35,8 +35,11 @@ type Service struct {
 	pool         *pgxpool.Pool
 	hbbDBPath    string
 	presencePath string
-	logger       *zap.Logger
-	settings     *settings.Store
+	// hbbsAddr is host:port of the rendezvous server's NAT-test listener
+	// (hbbs:21115) used for authoritative per-peer online queries.
+	hbbsAddr string
+	logger   *zap.Logger
+	settings *settings.Store
 
 	// encSecret encrypts device passwords at rest (AES-256-GCM keyed by
 	// SHA-256 of the panel's device secret). encFallback is the legacy
@@ -65,8 +68,18 @@ type Service struct {
 	// gap (re-registration / presence tick miss) does not flap the flag.
 	lastOnline map[string]time.Time
 
+	// peerPrimaryTs tracks when each peerPrimary mapping was last confirmed
+	// so stale associations expire instead of pinning peers to dead IPs.
+	peerPrimaryTs map[string]int64
+
 	// onlineState is the hex peer -> online flag as last written/published.
 	onlineState map[string]bool
+
+	// onlineSource explains WHY a peer is currently flagged online:
+	// "conn:<ip>" (live socket seen in the snapshot) or "grace:<rfc3339>"
+	// (no socket, held by the grace window until the timestamp). Deleted
+	// when the peer flips offline. Diagnostic only, served in the list DTO.
+	onlineSource map[string]string
 
 	subs       map[chan StatusEvent]struct{}
 	lastStatus *StatusEvent
@@ -75,6 +88,22 @@ type Service struct {
 type presenceConn struct {
 	IP   string `json:"ip"`
 	Port int    `json:"port"`
+	// Ms since this socket last received data (ss lastrcv). Absent when the
+	// sampler could not report it — treated as active (fail open).
+	LastRcvMs *int64 `json:"lastrcv_ms,omitempty"`
+}
+
+// connActiveAfterMs is the max socket silence (ms) after which a connection
+// no longer proves its peer alive. Live RustDesk clients talk every few
+// seconds (observed lastrcv ~5-15s); ghosts of powered-off PCs stay silent
+// for hours, so the margin is orders of magnitude wide either way.
+const connActiveAfterMs = 300_000
+
+func connIsActive(lastRcvMs *int64) bool {
+	if lastRcvMs == nil {
+		return true
+	}
+	return *lastRcvMs <= connActiveAfterMs
 }
 
 type presenceSnapshot struct {
@@ -97,16 +126,19 @@ type StatusEvent struct {
 }
 
 type Device struct {
-	ID            uuid.UUID  `json:"id"`
-	PeerID        string     `json:"peer_id"`
-	Alias         *string    `json:"alias"`
-	Pinned        bool       `json:"pinned"`
-	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
-	LastSeen      *time.Time `json:"last_seen,omitempty"`
-	Online        bool       `json:"online"`
-	PasswordSaved bool       `json:"password_saved"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID        uuid.UUID  `json:"id"`
+	PeerID    string     `json:"peer_id"`
+	Alias     *string    `json:"alias"`
+	Pinned    bool       `json:"pinned"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	LastSeen  *time.Time `json:"last_seen,omitempty"`
+	Online    bool       `json:"online"`
+	// Why the peer is flagged online ("conn:<ip>" / "grace:<rfc3339>");
+	// absent when offline or unknown (e.g. right after a backend restart).
+	OnlineSource  *string   `json:"online_source,omitempty"`
+	PasswordSaved bool      `json:"password_saved"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 	// Last-known PeerInfo snapshot (written by the web client on session
 	// login; NULL until the first panel connect).
 	Hostname          *string    `json:"hostname,omitempty"`
@@ -139,6 +171,10 @@ type StatusConn struct {
 	Port   int    `json:"port,omitempty"`
 	PeerID string `json:"peer_id,omitempty"`
 	Alias  string `json:"alias,omitempty"`
+	// Stale marks rows that must not be read as "peer online": the socket
+	// carried no recent traffic (ghost leftover) or the attributed peer is
+	// offline per the last computed flags.
+	Stale bool `json:"stale,omitempty"`
 }
 
 type ServerStatus struct {
@@ -160,8 +196,104 @@ type ListDevicesRequest struct {
 	Page   int    `form:"page,default=1"`
 	Limit  int    `form:"limit,default=20"`
 	Search string `form:"search"`
+	// Comma-separated searchable columns (whitelist enforced); empty = all.
+	Fields string `form:"fields"`
+	// Per-column match ops "col:op" (op = contains|exact|starts); unknown
+	// entries fall back to contains.
+	Ops    string `form:"ops"`
 	Pinned *bool  `form:"pinned"`
 	Online *bool  `form:"online"`
+}
+
+// searchFieldWhitelist maps API field names to devices columns. peer_id is
+// stored hex-encoded, so decimal input is encoded too (see searchClauses).
+var searchFieldWhitelist = map[string]string{
+	"alias":        "alias",
+	"peer_id":      "peer_id",
+	"hostname":     "hostname",
+	"username":     "username",
+	"platform":     "platform",
+	"host_version": "host_version",
+}
+
+// searchClauses builds the OR-ed ILIKE/LIKE conditions for a search term.
+// Pure (no DB) so it stays unit-testable.
+func searchClauses(search, fields, ops string) (clause string, args []interface{}) {
+	if len(search) > maxSearchLen {
+		search = search[:maxSearchLen]
+	}
+	wanted := map[string]bool{}
+	if fields != "" {
+		for _, f := range strings.Split(fields, ",") {
+			f = strings.TrimSpace(f)
+			if _, ok := searchFieldWhitelist[f]; ok {
+				wanted[f] = true
+			}
+		}
+	}
+	if len(wanted) == 0 {
+		for f := range searchFieldWhitelist {
+			wanted[f] = true
+		}
+	}
+	opByField := map[string]string{}
+	if ops != "" {
+		for _, e := range strings.Split(ops, ",") {
+			kv := strings.SplitN(strings.TrimSpace(e), ":", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			if _, ok := searchFieldWhitelist[kv[0]]; !ok {
+				continue
+			}
+			switch kv[1] {
+			case "exact", "starts", "contains":
+				opByField[kv[0]] = kv[1]
+			}
+		}
+	}
+	pattern := func(op, term string) string {
+		switch op {
+		case "exact":
+			return term
+		case "starts":
+			return term + "%"
+		default:
+			return "%" + term + "%"
+		}
+	}
+	// Deterministic column order for stable tests and queries.
+	ordered := []string{"alias", "peer_id", "hostname", "username", "platform", "host_version"}
+	parts := []string{}
+	idx := 1
+	for _, f := range ordered {
+		if !wanted[f] {
+			continue
+		}
+		col := searchFieldWhitelist[f]
+		op := opByField[f]
+		parts = append(parts, col+" ILIKE "+sqlArg(idx))
+		args = append(args, pattern(op, search))
+		idx++
+		if f == "peer_id" && isDecimalID(search) {
+			parts = append(parts, col+" ILIKE "+sqlArg(idx))
+			args = append(args, pattern(op, strings.ToUpper(hex.EncodeToString([]byte(search)))))
+			idx++
+		}
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
+}
+
+func isDecimalID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 type ListDevicesResponse struct {
@@ -176,7 +308,7 @@ type UpdateDeviceRequest struct {
 	Pinned *bool   `json:"pinned"`
 }
 
-func NewService(pool *pgxpool.Pool, hbbDBPath, presencePath string, encSecret string, settingsStore *settings.Store, logger *zap.Logger, encFallback ...string) *Service {
+func NewService(pool *pgxpool.Pool, hbbDBPath, presencePath string, encSecret string, settingsStore *settings.Store, logger *zap.Logger, hbbsOnlineAddr string, encFallback ...string) *Service {
 	fallback := ""
 	if len(encFallback) > 0 {
 		fallback = encFallback[0]
@@ -186,18 +318,21 @@ func NewService(pool *pgxpool.Pool, hbbDBPath, presencePath string, encSecret st
 		fallbackBytes = []byte(fallback)
 	}
 	return &Service{
-		pool:         pool,
-		hbbDBPath:    hbbDBPath,
-		presencePath: presencePath,
-		logger:       logger,
-		settings:     settingsStore,
-		encSecret:    []byte(encSecret),
-		encFallback:  fallbackBytes,
-		lastOnline:   make(map[string]time.Time),
-		peerPrimary:  make(map[string]string),
-		peerInfoIP:   make(map[string]string),
-		onlineState:  make(map[string]bool),
-		subs:         make(map[chan StatusEvent]struct{}),
+		pool:          pool,
+		hbbDBPath:     hbbDBPath,
+		presencePath:  presencePath,
+		hbbsAddr:      hbbsOnlineAddr,
+		logger:        logger,
+		settings:      settingsStore,
+		encSecret:     []byte(encSecret),
+		encFallback:   fallbackBytes,
+		lastOnline:    make(map[string]time.Time),
+		peerPrimary:   make(map[string]string),
+		peerPrimaryTs: make(map[string]int64),
+		peerInfoIP:    make(map[string]string),
+		onlineState:   make(map[string]bool),
+		onlineSource:  make(map[string]string),
+		subs:          make(map[chan StatusEvent]struct{}),
 	}
 }
 
@@ -280,6 +415,11 @@ func (s *Service) SetStatusRefreshMode(ctx context.Context, mode string) error {
 	return s.settings.Set(ctx, settings.StatusRefreshModeKey, mode)
 }
 
+// peerMappingTTL bounds how long a peer->IP association from the hbbs logs
+// is trusted without reconfirmation (presence.sh reports on a 300s rolling
+// window; twice that here for sampler-skew margin).
+const peerMappingTTL = 600 * time.Second
+
 func (s *Service) readPresence() *presenceSnapshot {
 	if s.presencePath == "" {
 		return nil
@@ -300,12 +440,20 @@ func (s *Service) readPresence() *presenceSnapshot {
 	}
 
 	s.mu.Lock()
+	nowUnix := time.Now().Unix()
 	for decID, ips := range snap.PeerIPs {
 		if len(ips) == 0 {
 			continue
 		}
 		hexID := strings.ToUpper(hex.EncodeToString([]byte(decID)))
 		s.peerPrimary[hexID] = strings.TrimPrefix(ips[0], "::ffff:")
+		s.peerPrimaryTs[hexID] = nowUnix
+	}
+	for hexID, ts := range s.peerPrimaryTs {
+		if nowUnix-ts > int64(peerMappingTTL.Seconds()) {
+			delete(s.peerPrimaryTs, hexID)
+			delete(s.peerPrimary, hexID)
+		}
 	}
 	s.mu.Unlock()
 
@@ -410,40 +558,83 @@ func (s *Service) enrichConns(raw []presenceConn, aliases map[string]string) ([]
 
 // enrichConnsSnapshot is the lock-free twin of enrichConns for callers that
 // already snapshotted the peer maps (e.g. GetServerStatus serving HTTP while
-// the watcher keeps writing).
-func (s *Service) enrichConnsSnapshot(raw []presenceConn, aliases, peerPrimary, peerInfo map[string]string) ([]StatusConn, int) {
+// the watcher keeps writing). online carries the last computed flags so rows
+// whose attributed peer is offline can be dimmed; lastSeen orders candidates
+// sharing one IP so N sockets get N distinct peers (most-recently-active
+// first) instead of a random first match per row; the count covers only
+// sockets with recent traffic.
+func (s *Service) enrichConnsSnapshot(raw []presenceConn, aliases, peerPrimary, peerInfo map[string]string, online map[string]bool, lastSeen map[string]time.Time) ([]StatusConn, int) {
 	peerByIP := map[string][]string{}
-	for hexID, ip := range peerPrimary {
-		if ip != "" {
+	seenIP := map[string]map[string]bool{}
+	addCand := func(ip, hexID string) {
+		if ip == "" {
+			return
+		}
+		if seenIP[ip] == nil {
+			seenIP[ip] = map[string]bool{}
+		}
+		if !seenIP[ip][hexID] {
+			seenIP[ip][hexID] = true
 			peerByIP[ip] = append(peerByIP[ip], hexID)
 		}
 	}
+	for hexID, ip := range peerPrimary {
+		addCand(ip, hexID)
+	}
 	for hexID, ip := range peerInfo {
-		if ip != "" {
-			peerByIP[ip] = append(peerByIP[ip], hexID)
+		addCand(ip, hexID)
+	}
+
+	// Distinct deterministic attribution per IP: most-recently-active
+	// candidate takes the first socket, the next takes the second, and so
+	// on; extra sockets repeat the top candidate. Ties break by hex id so
+	// the rows never flap between ticks.
+	assigned := make(map[int]string, len(raw))
+	byIPIdx := map[string][]int{}
+	for i, rc := range raw {
+		byIPIdx[rc.IP] = append(byIPIdx[rc.IP], i)
+	}
+	for ip, idxs := range byIPIdx {
+		cands := append([]string{}, peerByIP[ip]...)
+		sort.Slice(cands, func(a, b int) bool {
+			ta, tb := lastSeen[cands[a]], lastSeen[cands[b]]
+			if ta.Equal(tb) {
+				return cands[a] < cands[b]
+			}
+			return ta.After(tb)
+		})
+		for k, idx := range idxs {
+			if len(cands) == 0 {
+				break
+			}
+			if k < len(cands) {
+				assigned[idx] = cands[k]
+			} else {
+				assigned[idx] = cands[0]
+			}
 		}
 	}
 
 	seen := map[string]struct{}{}
 	count := 0
 	out := make([]StatusConn, 0, len(raw))
-	for _, rc := range raw {
+	for i, rc := range raw {
 		conn := StatusConn{IP: rc.IP, Port: rc.Port}
-		localSeen := map[string]struct{}{}
-		for _, hexID := range peerByIP[rc.IP] {
-			id := normalPeerID(hexID)
-			if _, ok := localSeen[id]; ok {
-				continue
-			}
-			localSeen[id] = struct{}{}
-			if conn.PeerID == "" {
-				conn.PeerID = id
-			}
-			if conn.Alias == "" {
-				conn.Alias = aliases[hexID]
+		active := connIsActive(rc.LastRcvMs)
+		if hexID, ok := assigned[i]; ok {
+			conn.PeerID = normalPeerID(hexID)
+			conn.Alias = aliases[hexID]
+			if on, seen := online[hexID]; seen && !on {
+				conn.Stale = true
 			}
 		}
+		if !active {
+			conn.Stale = true
+		}
 		out = append(out, conn)
+		if !active {
+			continue
+		}
 		key := conn.PeerID
 		if key == "" {
 			key = "ip:" + conn.IP
@@ -487,6 +678,7 @@ func (s *Service) tickStatus(ctx context.Context) {
 
 	known := s.fetchDevicePeerIDs(ctx)
 	online := s.computeOnline(snap, known)
+	s.applyHbbsVerdict(online, s.hbbsVerdict(ctx, known))
 	s.applyStatus(ctx, online)
 }
 
@@ -562,6 +754,7 @@ func (s *Service) syncDevices(ctx context.Context) {
 	}
 
 	online := s.computeOnline(snap, known)
+	s.applyHbbsVerdict(online, s.hbbsVerdict(ctx, known))
 	s.applyStatus(ctx, online)
 }
 
@@ -584,6 +777,58 @@ func (s *Service) fetchDevicePeerIDs(ctx context.Context) map[string]bool {
 		known[hexID] = true
 	}
 	return known
+}
+
+// hbbsVerdict queries hbbs for authoritative online flags, keyed by hex peer
+// id to match the known set. Returns nil when hbbs is unreachable or the
+// answer is unusable — the caller then falls back to socket detection.
+func (s *Service) hbbsVerdict(ctx context.Context, known map[string]bool) map[string]bool {
+	if s.hbbsAddr == "" {
+		return nil
+	}
+	hexIDs := make([]string, 0, len(known))
+	for hexID := range known {
+		hexIDs = append(hexIDs, hexID)
+	}
+	decIDs := make([]string, 0, len(hexIDs))
+	hexByDec := make(map[string]string, len(hexIDs))
+	for _, hexID := range hexIDs {
+		dec := normalPeerID(hexID)
+		decIDs = append(decIDs, dec)
+		hexByDec[dec] = hexID
+	}
+	flags, err := queryHbbsOnline(ctx, s.hbbsAddr, decIDs)
+	if err != nil {
+		s.logger.Warn("hbbs online query failed, using socket detection", zap.Error(err))
+		return nil
+	}
+	out := make(map[string]bool, len(hexIDs))
+	for dec, on := range flags {
+		if hexID, ok := hexByDec[dec]; ok {
+			out[hexID] = on
+		}
+	}
+	return out
+}
+
+// applyHbbsVerdict overrides socket-based flags with the authoritative
+// per-peer verdict (nil verdict = hbbs unreachable, keep socket result).
+func (s *Service) applyHbbsVerdict(online map[string]bool, verdict map[string]bool) {
+	if verdict == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for hexID, v := range verdict {
+		online[hexID] = v
+		if v {
+			s.lastOnline[hexID] = now
+			s.onlineSource[hexID] = "hbbs"
+		} else {
+			delete(s.onlineSource, hexID)
+		}
+	}
 }
 
 // computeOnline decides the online set for every known peer (true=online,
@@ -617,13 +862,20 @@ func (s *Service) computeOnline(snap *presenceSnapshot, known map[string]bool) m
 	// Number of live connections per IP. The socket snapshot is the definitive
 	// source; the plain-list/count variants in presence.json exist for
 	// compatibility with the panel API but are not used for online detection.
+	// Only sockets that recently carried data count: silent leftovers of
+	// powered-off PCs (no FIN sent, NAT keeps them ESTABLISHED) must not
+	// prove anyone alive.
 	avail := map[string]int{}
 	if snap != nil {
 		for _, c := range snap.HbbsConns {
-			avail[c.IP]++
+			if connIsActive(c.LastRcvMs) {
+				avail[c.IP]++
+			}
 		}
 		for _, c := range snap.HbbrConns {
-			avail[c.IP]++
+			if connIsActive(c.LastRcvMs) {
+				avail[c.IP]++
+			}
 		}
 	}
 
@@ -640,11 +892,16 @@ func (s *Service) computeOnline(snap *presenceSnapshot, known map[string]bool) m
 			for _, p := range peers {
 				res[p] = true
 				s.lastOnline[p] = now
+				s.onlineSource[p] = "conn:" + ip
 			}
 		} else {
+			// Ambiguous: fewer live sockets than peers behind one IP (shared
+			// NAT). No data tells which peer owns the socket, so the pick is
+			// flagged honestly instead of silently winning forever.
 			for _, p := range peers[:n] {
 				res[p] = true
 				s.lastOnline[p] = now
+				s.onlineSource[p] = "shared:" + ip
 			}
 		}
 	}
@@ -660,6 +917,9 @@ func (s *Service) computeOnline(snap *presenceSnapshot, known map[string]bool) m
 		}
 		if last := s.lastOnline[hexID]; !last.IsZero() && now.Sub(last) < grace {
 			res[hexID] = true
+			s.onlineSource[hexID] = "grace:" + last.Add(grace).UTC().Format(time.RFC3339)
+		} else {
+			delete(s.onlineSource, hexID)
 		}
 	}
 
@@ -801,6 +1061,14 @@ func (s *Service) GetServerStatus(c *gin.Context) {
 	for k, v := range s.peerInfoIP {
 		peerInfo[k] = v
 	}
+	online := make(map[string]bool, len(s.onlineState))
+	for k, v := range s.onlineState {
+		online[k] = v
+	}
+	lastSeen := make(map[string]time.Time, len(s.lastOnline))
+	for k, v := range s.lastOnline {
+		lastSeen[k] = v
+	}
 	s.mu.Unlock()
 
 	status := ServerStatus{}
@@ -815,8 +1083,8 @@ func (s *Service) GetServerStatus(c *gin.Context) {
 		status.UpdatedAt = time.Unix(snap.Ts, 0)
 
 		aliases := s.deviceAliases(c.Request.Context())
-		status.HbbsConns, status.HbbsDevices = s.enrichConnsSnapshot(snap.HbbsConns, aliases, peerPrimary, peerInfo)
-		status.HbbrConns, status.HbbrDevices = s.enrichConnsSnapshot(snap.HbbrConns, aliases, peerPrimary, peerInfo)
+		status.HbbsConns, status.HbbsDevices = s.enrichConnsSnapshot(snap.HbbsConns, aliases, peerPrimary, peerInfo, online, lastSeen)
+		status.HbbrConns, status.HbbrDevices = s.enrichConnsSnapshot(snap.HbbrConns, aliases, peerPrimary, peerInfo, online, lastSeen)
 	}
 	c.JSON(200, status)
 }
@@ -1147,13 +1415,11 @@ func (s *Service) ListDevices(c *gin.Context) {
 	argIdx := 1
 
 	if req.Search != "" {
-		search := req.Search
-		if len(search) > maxSearchLen {
-			search = search[:maxSearchLen]
-		}
-		query += " AND (alias ILIKE " + sqlArg(argIdx) + " OR peer_id ILIKE " + sqlArg(argIdx) + " OR hostname ILIKE " + sqlArg(argIdx) + " OR username ILIKE " + sqlArg(argIdx) + ")"
-		args = append(args, "%"+search+"%")
-		argIdx++
+		// First condition: placeholders in the clause start at $1.
+		clause, sargs := searchClauses(req.Search, req.Fields, req.Ops)
+		query += " AND " + clause
+		args = append(args, sargs...)
+		argIdx += len(sargs)
 	}
 
 	if req.Pinned != nil {
@@ -1225,6 +1491,17 @@ func (s *Service) ListDevices(c *gin.Context) {
 		}
 		if lastSeen.Valid {
 			d.LastSeen = &lastSeen.Time
+		}
+		// Diagnostic source is attached only while the DB flag says online;
+		// after a backend restart the map is empty and the source is honestly
+		// unknown until the next tick recomputes it.
+		if d.Online {
+			s.mu.Lock()
+			src, ok := s.onlineSource[d.PeerID]
+			s.mu.Unlock()
+			if ok {
+				d.OnlineSource = &src
+			}
 		}
 		d.PeerID = normalPeerID(d.PeerID)
 		devices = append(devices, d)

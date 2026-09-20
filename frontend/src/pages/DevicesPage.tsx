@@ -13,8 +13,11 @@ import { StatusDot } from '@/components/StatusDot'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { useDevices, useUpdateDevice, useDeleteDevice, useDeviceOnlineStream, useSaveDevicePassword, useDeleteDevicePassword, Device, formatDisplays, describeDisplays } from '@/api/devices'
+import { DeviceSearchFilter } from '@/components/DeviceSearchFilter'
+import { loadSearchConfig, saveSearchConfig, searchConfigToParams, SearchConfig } from '@/lib/deviceSearch'
 import { apiErrorText } from '@/api/client'
 import { formatRelativeTime, cn } from '@/lib/utils'
+import { parseOnlineSource, onlineDotState } from '@/lib/devicePresence'
 import { useToast } from '@/hooks/use-toast'
 import { useServerInfo } from '@/api/serverInfo'
 import {
@@ -29,6 +32,7 @@ export function DevicesPage() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
+  const [searchCfg, setSearchCfg] = useState<SearchConfig>(loadSearchConfig)
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline'>('all')
   const [page, setPage] = useState(1)
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null)
@@ -43,8 +47,9 @@ export function DevicesPage() {
   const { online: onlineSet, streamActive } = useDeviceOnlineStream(pushEnabled)
 
   const onlineFilter = statusFilter === 'all' ? undefined : statusFilter === 'online'
+  const searchParams = searchConfigToParams(searchCfg)
   const { data, isLoading, isError, error, refetch } = useDevices(
-    { page, limit: 20, search, online: onlineFilter },
+    { page, limit: 20, search, online: onlineFilter, ...searchParams },
     { refetchInterval: refreshMs },
   )
   const updateDevice = useUpdateDevice()
@@ -64,6 +69,12 @@ export function DevicesPage() {
 
   const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSearch(e.target.value)
+    setPage(1)
+  }
+
+  const handleSearchFilterChange = (cfg: typeof searchCfg) => {
+    setSearchCfg(cfg)
+    saveSearchConfig(cfg)
     setPage(1)
   }
 
@@ -146,14 +157,15 @@ export function DevicesPage() {
             </div>
             <div className="w-full sm:w-auto">
               <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center">
-                <div className="relative w-full">
+                <DeviceSearchFilter value={searchCfg} onChange={handleSearchFilterChange} />
+                <div className="relative w-full sm:w-64">
                   <Search className="absolute start-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     placeholder={t('devices.searchPlaceholder')}
                     aria-label={t('devices.searchPlaceholder')}
                     value={search}
                     onChange={handleSearch}
-                    className="ps-10 pe-3 w-full sm:w-64"
+                    className="ps-10 pe-3 w-full"
                   />
                 </div>
                 <select
@@ -216,6 +228,28 @@ export function DevicesPage() {
                     ) : (
                       (data?.items ?? []).map((device) => {
                         const expanded = expandedId === device.id
+                        const isOn = deviceOnline(device)
+                        const src = parseOnlineSource(device.online_source)
+                        const graceTime =
+                          src.kind === 'grace' && src.until
+                            ? new Date(src.until)
+                            : null
+                        const sourceText = !isOn
+                          ? null
+                          : src.kind === 'hbbs'
+                            ? t('devices.hbbsSrc')
+                            : src.kind === 'conn'
+                              ? t('devices.liveConn', { ip: src.ip })
+                              : src.kind === 'shared'
+                                ? t('devices.sharedConn', { ip: src.ip })
+                                : src.kind === 'grace' && graceTime && !Number.isNaN(graceTime.getTime())
+                              ? t('devices.graceHold', {
+                                  time: graceTime.toLocaleTimeString(i18n.language, {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  }),
+                                })
+                              : t('devices.sourceUnknown')
                         return (
                           <Fragment key={device.id}>
                             <TableRow>
@@ -232,7 +266,7 @@ export function DevicesPage() {
                                   >
                                     {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                                   </Button>
-                                  <StatusDot online={deviceOnline(device)} />
+                                  <StatusDot online={onlineDotState(isOn, src, device.last_seen)} />
                                 </div>
                               </TableCell>
                               <TableCell>
@@ -295,7 +329,19 @@ export function DevicesPage() {
                                 )}
                               </TableCell>
                               <TableCell>
-                                {device.last_seen ? formatRelativeTime(i18n.language, device.last_seen, t('devices.never')) : t('devices.never')}
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="whitespace-nowrap">
+                                    {device.last_seen ? formatRelativeTime(i18n.language, device.last_seen, t('devices.never')) : t('devices.never')}
+                                  </span>
+                                  {isOn && sourceText && (
+                                    <span
+                                      className="whitespace-nowrap text-[11px] text-muted-foreground"
+                                      title={device.online_source ?? undefined}
+                                    >
+                                      {sourceText}
+                                    </span>
+                                  )}
+                                </div>
                               </TableCell>
                               <TableCell>
                                 <Button
@@ -308,11 +354,11 @@ export function DevicesPage() {
                                     'shrink-0',
                                     // The ghost variant pulls in .neu-btn (own bg/border/shadow);
                                     // kill the neumorphic chrome so the flat amber reads clean.
-                                    device.pinned && 'border-transparent bg-amber-400 text-amber-950 shadow-none hover:bg-amber-300 dark:bg-amber-500/20 dark:text-amber-300 dark:hover:bg-amber-500/30'
+                                    device.pinned && 'border-transparent bg-amber-500 text-white shadow-none hover:bg-amber-400 dark:bg-amber-500 dark:text-white dark:hover:bg-amber-400'
                                   )}
                                   onClick={() => handlePin(device)}
                                 >
-                                  <Pin className={cn('h-4 w-4', device.pinned ? 'text-amber-950 dark:text-amber-300' : 'text-muted-foreground')} />
+                                  <Pin className={cn('h-4 w-4', device.pinned ? 'text-white' : 'text-muted-foreground')} />
                                 </Button>
                               </TableCell>
                               <TableCell>

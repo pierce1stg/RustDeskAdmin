@@ -510,8 +510,18 @@ func (p *PanelUpdater) HandleReset(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "an update job is still running"})
 		return
 	}
-	_ = os.Remove(filepath.Join(p.statusDir, panelStatusFilename))
-	_ = os.Remove(filepath.Join(p.statusDir, panelLogFilename))
+	// Removal errors used to be discarded, which made reset silently do
+	// nothing (e.g. while the status bind was mounted read-only). Report.
+	statusPath := filepath.Join(p.statusDir, panelStatusFilename)
+	logPath := filepath.Join(p.statusDir, panelLogFilename)
+	if err := os.Remove(statusPath); err != nil && !os.IsNotExist(err) {
+		c.JSON(500, gin.H{"error": fmt.Sprintf("cannot clear update status: %v", err)})
+		return
+	}
+	if err := os.Remove(logPath); err != nil && !os.IsNotExist(err) {
+		c.JSON(500, gin.H{"error": fmt.Sprintf("cannot clear update log: %v", err)})
+		return
+	}
 	c.JSON(200, gin.H{"status": "reset"})
 }
 

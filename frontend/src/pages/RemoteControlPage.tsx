@@ -893,15 +893,15 @@ export function RemoteControlPage() {
               <Button
                 size="sm"
                 variant="outline"
-                className="border-white/20 bg-white/10 text-white hover:bg-white/20"
+                className="border-white/20 bg-white/10 text-white shadow-none hover:bg-white/20"
                 onClick={() => setVideoFatal(null)}
               >
                 {t('control.videoCodecDismiss')}
               </Button>
-              <Button size="sm" variant="secondary" onClick={backToAutoCodec}>
+              <Button size="sm" variant="secondary" className="shadow-none" onClick={backToAutoCodec}>
                 {t('control.videoCodecAuto')}
               </Button>
-              <Button size="sm" variant="destructive" onClick={handleDisconnect}>
+              <Button size="sm" variant="destructive" className="shadow-none" onClick={handleDisconnect}>
                 {t('control.videoCodecDisconnect')}
               </Button>
             </div>
@@ -920,12 +920,12 @@ export function RemoteControlPage() {
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-7 border-white/20 bg-white/10 px-2 text-[11px] text-white hover:bg-white/20"
+                    className="h-7 border-white/20 bg-white/10 px-2 text-[11px] text-white shadow-none hover:bg-white/20"
                     onClick={() => setVideoSteered(null)}
                   >
                     {t('control.videoCodecDismiss')}
                   </Button>
-                  <Button size="sm" variant="secondary" className="h-7 px-2 text-[11px]" onClick={backToAutoCodec}>
+                  <Button size="sm" variant="secondary" className="h-7 px-2 text-[11px] shadow-none" onClick={backToAutoCodec}>
                     {t('control.videoCodecAuto')}
                   </Button>
                 </div>

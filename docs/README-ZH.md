@@ -71,12 +71,13 @@ RustDeskAdmin/
 
 - **Web 管理面板**（React SPA + Go API）：
   - 仪表盘 —— 服务器状态摘要、实时在线。
-  - 设备 —— 已注册设备列表（`GET /api/devices`）、PeerInfo 列（主机/用户/系统/版本/显示器）、搜索、置顶/别名、加密保存的密码、查看详情、删除。
+  - 设备 —— 已注册设备列表（`GET /api/devices`）、PeerInfo 列（主机/用户/系统/版本/显示器）、按全部字段搜索（含字段选择，包含/精确/开头匹配，支持十进制 ID）、置顶/别名、加密保存的密码、查看详情、删除。状态点为三色：在线、离线、存疑。
   - 设置 —— 可折叠分区（状态按浏览器记忆）、面板设置（初始从 `.env` 读取，之后以数据库为准）；Web 客户端默认值、聊天系统消息和客户端显示名称均在此配置。
   - 登录 = JWT access + refresh 令牌，会话保存在服务端；会话随 refresh 令牌过期而轮换和清理；可修改管理员凭据。
-- **实时在线状态**（`presence` 容器）：
-  - 直接从 hbbs/hbbr 的网络命名空间读取真实连接（nsenter + `ss` + docker.sock）；
+- **实时在线状态**（`presence` 容器 + 后端裁决）：
+  - 直接从 hbbs/hbbr 的网络命名空间读取真实连接（nsenter + `ss` + docker.sock），并评估每条连接的流量新鲜度；
   - 将活跃对端 IP、监听端口状态和对端→IP 绑定写入 `status/presence.json`；
+  - 后端还会直接询问 hbbs（与原生客户端相同的 `OnlineRequest`）获取权威的按对端在线位图——共享 NAT 从此无法混淆对端（`HBB_ONLINE_ADDR`，默认 `hbbs:21115`）；
   - 后端也会聚合状态，并通过 `/api/status` 暴露。
 - **RustDesk 服务器**：官方镜像 `rustdesk/rustdesk-server:1.1.16` 中的 hbbs（ID）+
   hbbr（中继）；密钥与设备库存放在 `data/hbbs/`。
@@ -533,7 +534,7 @@ mkdir -p data && tar xzf ~/rustdesk-migrate/data.tgz -C .
 | POST   | `/api/auth/refresh`         | 刷新 access 令牌                              |
 | POST   | `/api/auth/logout`          | 登出（幂等）                                  |
 | PUT    | `/api/auth/password`        | 修改管理员凭据（≥8 个字符）                   |
-| GET    | `/api/devices`              | 设备列表（分页）                              |
+| GET    | `/api/devices`              | 设备列表（分页；`search`、`fields`、`ops`）    |
 | PATCH  | `/api/devices/:id`          | 更新设备（alias、pinned）                     |
 | DELETE | `/api/devices/:id`          | 删除设备                                      |
 | GET    | `/api/devices/:id/password` | 已存密码状态（绝不返回密钥本身）              |

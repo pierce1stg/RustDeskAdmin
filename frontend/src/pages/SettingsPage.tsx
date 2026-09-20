@@ -504,12 +504,18 @@ function PanelUpdatesCard() {
     setDismissedBanner(bannerId)
   }
 
-  // Toasts on terminal transitions (tracked across polls).
+  // Toasts on terminal transitions tracked across polls. The first mount
+  // only records the phase: revisiting a stale terminal state must not
+  // re-toast it — the card banner already shows the state of the world.
+  // The 'idle' baseline is skipped too: on page load the query resolves
+  // idle (no data yet) -> terminal (data arrived), which is a resolution,
+  // not a transition. Genuine runs always pass through an active phase,
+  // so no legitimate toast is lost.
   const prevPhaseRef = useRef<string | undefined>(undefined)
   useEffect(() => {
     const prev = prevPhaseRef.current
     prevPhaseRef.current = phase
-    if (!phase || phase === prev) return
+    if (!phase || phase === prev || prev === undefined || prev === 'idle') return
     if (phase === 'ok') {
       toast({ title: t('settings.panelToastOk'), variant: 'success' })
     } else if (phase === 'rolled_back') {
@@ -623,7 +629,7 @@ function PanelUpdatesCard() {
           )
         )}
 
-        {(active || logLines.length > 0) && (
+        {(active || logLines.length > 0 || showReset) && (
           <div className="space-y-2 rounded-lg border px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-sm font-medium">{t('settings.panelLogTitle')}</span>

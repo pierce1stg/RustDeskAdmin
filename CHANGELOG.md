@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.0.2 — 2026-09-20
+
+- Device search that works: decimal IDs match hex-encoded peer_id; field
+  picker popover (no modal) with per-field contains/exact/starts conditions,
+  persisted locally.
+- Pinned devices use a high-contrast amber/white style in both themes;
+  codec-fatal dialog buttons are flat.
+- Activity column renamed to last activity (devices + dashboard).
+- Server conn rows attribute distinct peers deterministically (no more
+  first-match lottery or flapping); ghost badge removed, dimmed rows with
+  tooltip stay.
+- Presence verdict from hbbs itself: the backend asks the rendezvous server
+  (OnlineRequest on :21115, same as native clients) for the authoritative
+  per-peer online bitmask (30s heartbeat window), ending all shared-NAT
+  misattribution. Socket detection remains only as a fallback.
+- Server card honesty: silent sockets and rows whose peer is offline per hbbs
+  are dimmed with a tooltip; device counts cover only sockets with recent
+  traffic.
+- Presence honesty: sockets prove alive only with recent traffic (ss lastrcv,
+  5-min window) — silent leftovers of powered-off PCs no longer mark anyone
+  online; shared-NAT picks are flagged `shared:<ip>` instead of silently
+  winning forever; log-based peer→IP mappings expire.
+- Devices table shows why a peer is online (live socket IP / shared socket /
+  grace hold) and flags peers online long past the maximum grace as stale.
+
 ## v1.0.1 — 2026-09-20
 
 - Panel update card is live: status/log/backups poll while work runs (and on
